@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from difflib import SequenceMatcher
 from itertools import zip_longest
+from typing import TYPE_CHECKING
 
 from ..extract.normalize import normalize, tokenize
 from ..extract.text import extract_text_per_page
@@ -29,6 +30,9 @@ from ..models import (
     TextChange,
     TokenDiff,
 )
+
+if TYPE_CHECKING:
+    from ..config import Config
 
 
 # ---------------------------------------------------------------------------
@@ -162,17 +166,22 @@ def diff_normalized_pages(
     )
 
 
-def diff_text(rev_a: Revision, rev_b: Revision) -> TextChange:
+def diff_text(
+    rev_a: Revision,
+    rev_b: Revision,
+    config: "Config | None" = None,
+) -> TextChange:
     """Extract, normalize, and diff the text layers of two :class:`Revision` objects.
 
     Extraction failures (empty list from a revision that should have pages) are
     recorded in ``notes``; the diff is computed on whatever pages were extracted.
+    When *config* is supplied its normalisation toggles are applied.
     """
     raw_a = extract_text_per_page(rev_a.data)
     raw_b = extract_text_per_page(rev_b.data)
 
-    pages_a = [normalize(p) for p in raw_a]
-    pages_b = [normalize(p) for p in raw_b]
+    pages_a = [normalize(p, config) for p in raw_a]
+    pages_b = [normalize(p, config) for p in raw_b]
 
     notes: list[str] = []
     if rev_a.page_count > 0 and not raw_a:

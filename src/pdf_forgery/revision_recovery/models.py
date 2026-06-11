@@ -338,3 +338,73 @@ class ObjectDiff:
         for c in self.changes:
             result.setdefault(c.change_class, []).append(c)
         return result
+
+
+# ---------------------------------------------------------------------------
+# Scoring models (Task 5)
+# ---------------------------------------------------------------------------
+
+
+class ConfidenceTier(str, Enum):
+    """Advisory confidence tier produced by the scoring rule tree.
+
+    ``str`` mixin lets values serialize to plain JSON without extra work.
+    A human reviewer makes the final call — the tier is never a binary verdict.
+    """
+
+    INCONCLUSIVE = "inconclusive"
+    """Only one revision found.  Route to later stages (font / OCR)."""
+
+    LOW = "low"
+    """Multiple revisions, changes confined to SIGNATURE / META / MARKUP /
+    FORM_FILL (benign).  Score band: 0-30."""
+
+    MEDIUM = "medium"
+    """Suspicious but not conclusive: CONTENT changed without a text diff,
+    OVERLAY / FIELD_EDIT present, or a revision could not be reconstructed.
+    Score band: 30-70.  OCR cross-check recommended."""
+
+    HIGH = "high"
+    """Substantive text change in a CONTENT object — strong evidence of
+    direct text editing.  Score band: 70-100."""
+
+
+@dataclass(frozen=True)
+class ScoringResult:
+    """Output of the scoring rule tree for one PDF analysis.
+
+    The ``score`` is advisory; a human reviewer decides.  ``reasons`` gives
+    a human-readable explanation of the tier decision.  ``report.py`` combines
+    this with the raw :class:`TextChange` / :class:`ObjectDiff` data to render
+    the before→after evidence.
+    """
+
+    tier: ConfidenceTier
+
+    score: int | None
+    """Numeric score within the tier's band, or ``None`` for INCONCLUSIVE."""
+
+    reasons: tuple[str, ...]
+    """Ordered explanation of the scoring decision (most significant first)."""
+
+    object_classes_seen: tuple[ObjectChangeClass, ...]
+    """All change classes found across every consecutive revision pair."""
+
+    has_substantive_text_change: bool
+    """True if any page in any pair had a substantive normalized text diff."""
+
+    has_high_value_change: bool
+    """True if any changed token matched a high-value pattern (before Config toggles)."""
+
+    high_value_kind: HighValueKind | None
+    """Highest-priority HighValueKind that drove the score, after Config toggles.
+    ``None`` when no high-value pattern was active or the toggles suppressed it."""
+
+    revision_count: int
+    """Number of revisions successfully reconstructed."""
+
+    has_reconstruction_failures: bool
+    """True if any detected revision could not be reconstructed."""
+
+    notes: tuple[str, ...]
+    """Diagnostics / warnings that do not affect the tier decision."""

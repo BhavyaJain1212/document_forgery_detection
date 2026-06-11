@@ -368,7 +368,32 @@ A running checklist, updated at the end of every task.
     isolated geometry, CONTENT/SIGNATURE/MARKUP/OVERLAY/FORM_FILL/FIELD_EDIT/META
     classification, mixed changes, unloadable inputs, and grouping. Suite:
     175 pass.
-- [ ] Stage 1 / Task 5 — `config.py` + `scoring.py`
+- [x] **Stage 1 / Task 5 — `config.py` + `scoring.py`** (2026-06-11)
+  - [x] `config.py`: `Config` dataclass — all thresholds, score bands, high-value
+    regex pattern strings (`DEFAULT_AMOUNT/DATE/ID_LIKE_PATTERN`), normalisation
+    toggles (`nfc_normalize`, `strip_zero_width`, `collapse_whitespace`),
+    high-value enable flags (`enable_amount_pattern`, `enable_date_pattern`,
+    `enable_id_like_boost`), behaviour toggle (`form_fill_triggers_medium`).
+    Nothing hard-coded outside this file.
+  - [x] `models.py` additions: `ConfidenceTier(str, Enum)` (INCONCLUSIVE / LOW /
+    MEDIUM / HIGH) and `ScoringResult` frozen dataclass (tier, score, reasons,
+    object_classes_seen, has_substantive_text_change, has_high_value_change,
+    high_value_kind, revision_count, has_reconstruction_failures, notes).
+  - [x] `extract/normalize.py`: accepts optional `Config`; applies NFC / strip-ZW /
+    collapse-whitespace per toggles. Default (None) = all on (spec default).
+  - [x] `diff/textdiff.py`: `diff_text` accepts optional `Config`; passes it to
+    `normalize()` so normalisation toggles propagate end-to-end.
+  - [x] `scoring.py`: explicit rule tree (not a weighted sum):
+    INCONCLUSIVE (total_detected ≤ 1) → HIGH (substantive text diff + CONTENT
+    object change; score driven by effective_hv_kind after toggles) → MEDIUM (any
+    of: CONTENT no-text-diff / OVERLAY / FIELD_EDIT / form_fill_triggers_medium +
+    FORM_FILL / recon failure; score = max of triggered conditions) → LOW (default
+    benign). All score values and toggles sourced from Config. HIGH wins over MEDIUM
+    when both conditions exist.
+  - [x] `tests/test_scoring.py` — 48 tests: INCONCLUSIVE (4), HIGH (15), MEDIUM
+    (13), LOW (9), ResultFields (7). Covers every tier boundary, custom Config
+    overrides, toggle combinations, multi-pair aggregation, priority ordering.
+    Suite: 223 pass.
 - [ ] Stage 1 / Task 6 — `report.py` + `cli.py`
 - [ ] Stage 1 / Task 7 — `scripts/make_fixtures.py` (known +/- cases)
 - [ ] Stage 1 / Task 8 — end-to-end tests (HIGH on positive, INCONCLUSIVE on negative)
