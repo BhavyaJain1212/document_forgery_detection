@@ -461,4 +461,23 @@ A running checklist, updated at the end of every task.
   - [x] `.gitignore`: fixed the stale `tests/_fixtures/` pattern to the real
     `tests/fixtures/` path so the generated PDFs stay out of git (repo policy:
     keep the generator, not its output; fixtures are regenerated on demand).
-- [ ] Stage 1 / Task 8 — end-to-end tests (HIGH on positive, INCONCLUSIVE on negative)
+- [x] **Stage 1 / Task 8 — end-to-end tests + README finalize** (2026-06-11)
+  - [x] `tests/conftest.py`: session-scoped `fixtures` (+ `clean_pdf` /
+    `forged_pdf`) built once into a tmp dir via `scripts/make_fixtures.py`
+    (`scripts/` added to `sys.path`), so e2e tests run on the exact shipped
+    artifacts without depending on the git-ignored `tests/fixtures/` checkout.
+  - [x] `tests/test_end_to_end.py` (5): forged → HIGH, score 95, AMOUNT kind,
+    reasons contain "high-value field altered", single finding on page 1 mapped
+    to a CONTENT object with exact before/after `5,000` → `50,000`; clean →
+    INCONCLUSIVE, score None, no findings; CLI summary shows before→after and
+    JSON tiers match (verdict never affects exit code).
+  - [x] `README.md` finalized: status now "Stage 1 complete, 246 tests";
+    `Usage` section with the real CLI flags + output rules + confidence-tier
+    table + advisory note; `Develop` documents the fixture generator.
+  - [x] Full suite: **246 passed.**
+
+### Stage 1 — DONE. All deliverables met:
+package with clear modules; CLI (JSON + human summary, batch, advisory exit
+codes); deterministic fixture generator (known +/-); end-to-end tests asserting
+HIGH-on-positive / INCONCLUSIVE-on-negative; README. Later stages
+(`font_fingerprint/`, `ocr_crosscheck/`) plug in as sibling subpackages.
