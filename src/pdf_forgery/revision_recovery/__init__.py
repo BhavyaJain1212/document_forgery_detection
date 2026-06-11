@@ -12,20 +12,23 @@ Implemented:
     - highvalue: classify_token / classify_change (amount/date/id_like).
     - config: Config dataclass — all thresholds, score bands, regexes, toggles.
     - scoring: rule tree → INCONCLUSIVE / LOW / MEDIUM / HIGH + score + evidence.
-
-Proposed / not yet implemented (see ../../CLAUDE.md): report, cli.
+    - analyze: orchestrate the full pipeline → AnalysisReport (analyze_path).
+    - report: render AnalysisReport → JSON (machine) and a human summary.
 """
 
+from .analyze import analyze_bytes, analyze_path
 from .config import Config
 from .detect import detect, detect_from_path
 from .diff.objectdiff import classify_changed_object, diff_objects
 from .diff.textdiff import diff_normalized_pages, diff_text
 from .highvalue import classify_change, classify_token
 from .models import (
+    AnalysisReport,
     CharSpan,
     ConfidenceTier,
     DetectionResult,
     EOFMarker,
+    Finding,
     HighValueKind,
     ObjectChange,
     ObjectChangeClass,
@@ -41,6 +44,7 @@ from .models import (
     XrefSection,
 )
 from .reconstruct import reconstruct, reconstruct_from_path
+from .report import render_json, render_summary, report_to_dict
 from .scoring import score
 
 __all__ = [
@@ -63,11 +67,20 @@ __all__ = [
     "classify_change",
     # scoring
     "score",
+    # orchestration
+    "analyze_path",
+    "analyze_bytes",
+    # reporting
+    "render_json",
+    "render_summary",
+    "report_to_dict",
     # models
+    "AnalysisReport",
     "CharSpan",
     "ConfidenceTier",
     "DetectionResult",
     "EOFMarker",
+    "Finding",
     "HighValueKind",
     "ObjectChange",
     "ObjectChangeClass",

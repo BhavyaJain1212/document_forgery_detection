@@ -205,13 +205,20 @@ document_forgery_detection/
 │           │                          #   strong; ID-like weak). Config-driven.
 │           ├── scoring.py             # combine text + object diffs -> tier + score
 │           │                          #   band + evidence per rubric. Config thresholds.
+│           ├── analyze.py             # orchestration: detect->reconstruct->diff->
+│           │                          #   score->findings -> AnalysisReport.
+│           │                          #   analyze_path/analyze_bytes (read-only,
+│           │                          #   never raises). Added in Task 6 to keep
+│           │                          #   report.py pure-render and cli.py thin.
 │           └── report.py              # render AnalysisReport -> JSON (machine) and
 │                                      #   a human summary showing before -> after.
 ├── scripts/
-│   └── make_fixtures.py       # generate: clean.pdf, edited_incremental.pdf
-│                              #   (known-positive, text changed via incremental
-│                              #   update, original preserved), single_rev.pdf
-│                              #   (known-negative). Deterministic output.
+│   └── make_fixtures.py       # generate (deterministic) into tests/fixtures/:
+│                              #   clean.pdf = single-revision KNOWN-NEGATIVE
+│                              #   (also serves the "single_rev" role); and
+│                              #   edited_incremental.pdf = KNOWN-POSITIVE, amount
+│                              #   changed via incremental update, original bytes
+│                              #   preserved as a prefix.
 └── tests/
     ├── conftest.py            # build fixtures into a tmp dir once per session
     ├── test_detect.py         # revision detection over synthetic raw bytes
@@ -219,6 +226,8 @@ document_forgery_detection/
     ├── test_objectdiff.py     # classification of overridden objects
     ├── test_textdiff.py       # normalization + substantive-change detection
     ├── test_scoring.py        # tier/score boundaries from the rubric
+    ├── test_report.py         # analyze + JSON/summary rendering (inline fixtures)
+    ├── test_cli.py            # CLI output rules + exit codes
     └── test_end_to_end.py     # detector vs fixtures: positive -> HIGH,
                                #   negative -> INCONCLUSIVE
 ```
@@ -394,6 +403,62 @@ A running checklist, updated at the end of every task.
     (13), LOW (9), ResultFields (7). Covers every tier boundary, custom Config
     overrides, toggle combinations, multi-pair aggregation, priority ordering.
     Suite: 223 pass.
-- [ ] Stage 1 / Task 6 — `report.py` + `cli.py`
-- [ ] Stage 1 / Task 7 — `scripts/make_fixtures.py` (known +/- cases)
+- [x] **Stage 1 / Task 6 — `report.py` + `cli.py` (+ `analyze.py`)** (2026-06-11)
+  - [x] `models.py` additions: `Finding` (revision indices, changed object id(s)
+    `"<obj> <gen>"` + class, page index, token-level before/after, high-value
+    flag/kind, one-line summary; `before_text`/`after_text` props) and
+    `AnalysisReport` (per-file: path, `ok`/`error` for RUN success, raw_size,
+    candidate/revision/failure counts, `ScoringResult`, findings, full
+    text_changes + object_diffs, aggregated notes).
+  - [x] **`analyze.py`** (new orchestration module, not in the original layout —
+    keeps `report.py` pure-render and `cli.py` thin): `analyze_bytes(raw, path,
+    config)` and read-only `analyze_path(path, config)` run detect → reconstruct
+    → per-pair diff_text + diff_objects → score → `_build_findings` →
+    `AnalysisReport`. Never raises; unreadable/dir/missing path → `ok=False`
+    report. Findings come from substantive page text diffs (enriched with CONTENT
+    object ids for that page) plus object-only flags (OVERLAY/FIELD_EDIT/
+    FORM_FILL) and CONTENT-changed-but-no-text (possible overlay) so nothing is
+    silently dropped.
+  - [x] `report.py`: `report_to_dict` / `render_json` (single → JSON object,
+    batch sequence → JSON array; no file bytes; deterministic, `ensure_ascii=
+    False`) and `render_summary` (human before→after per finding: revision
+    indices, object id(s)+class, page number, before/after text). Every summary
+    states confidence is ADVISORY.
+  - [x] `cli.py` (`pdf-forgery <path>`): no flags → summary to stdout; `--json
+    <out>` (`-`=stdout) writes machine JSON and suppresses the summary unless
+    `--summary` forces it; directory arg → batch over top-level `*.pdf` only (no
+    recursion) as ONE combined JSON array. Exit code: 0 = run produced output
+    (verdict irrelevant — HIGH still exits 0); 2 = usage/path error (missing
+    path, empty dir, unwritable `--json`).
+  - [x] Facade `revision_recovery/__init__.py` re-exports `analyze_path`,
+    `analyze_bytes`, `render_json`, `render_summary`, `report_to_dict`,
+    `AnalysisReport`, `Finding`.
+  - [x] `tests/test_report.py` (10) + `tests/test_cli.py` (8): inline
+    pikepdf-built incremental content-edit fixture (known-positive → HIGH) and
+    single-rev fixture (known-negative → INCONCLUSIVE); cover JSON object vs
+    array, summary before→after + advisory, output-rule matrix, no-recursion,
+    exit codes. Suite: 241 pass. (Dedicated fixture generator + canonical
+    end-to-end assertions remain Tasks 7–8.)
+- [x] **Stage 1 / Task 7 — `scripts/make_fixtures.py` (known +/- cases)** (2026-06-11)
+  - [x] `build_clean()` → single-revision PDF (Type1/Helvetica content stream:
+    prose + `Approved claim amount: Rs 5,000`). Saved with
+    `deterministic_id=True`; `Pdf.new()` writes no dates → byte-stable output.
+    This is the **known-negative** (one revision → INCONCLUSIVE).
+  - [x] `build_forged(clean)` → appends a genuine **incremental update**:
+    new `/Contents` object (amount → `Rs 50,000`) + classic xref subsection +
+    trailer chained via `/Prev` (to the original `startxref`) + `startxref` +
+    `%%EOF`, all appended to the original bytes. Verified `clean` is an exact
+    byte-prefix of the forged file (only 338 bytes appended) — original objects
+    preserved, the "Save not Save-As" hallmark. **Known-positive** (HIGH 95,
+    amount altered).
+  - [x] `write_fixtures(dest=tests/fixtures/)` writes `clean.pdf` +
+    `edited_incremental.pdf`; `main()` is the CLI. `ORIGINAL_AMOUNT` /
+    `FORGED_AMOUNT` exported as constants for Task-8 assertions. Determinism
+    confirmed (identical sha256 across runs).
+  - [x] Detector run against the fixtures: `clean.pdf` → INCONCLUSIVE,
+    `edited_incremental.pdf` → HIGH (`5,000 → 50,000`, object `4 0 [content]`,
+    page 1).
+  - [x] `.gitignore`: fixed the stale `tests/_fixtures/` pattern to the real
+    `tests/fixtures/` path so the generated PDFs stay out of git (repo policy:
+    keep the generator, not its output; fixtures are regenerated on demand).
 - [ ] Stage 1 / Task 8 — end-to-end tests (HIGH on positive, INCONCLUSIVE on negative)

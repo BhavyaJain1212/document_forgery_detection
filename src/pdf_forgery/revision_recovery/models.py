@@ -408,3 +408,104 @@ class ScoringResult:
 
     notes: tuple[str, ...]
     """Diagnostics / warnings that do not affect the tier decision."""
+
+
+# ---------------------------------------------------------------------------
+# Report models (Task 6)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One flagged change between two consecutive revisions, with evidence.
+
+    A finding bundles exactly what the spec requires for every flagged change:
+    the revision indices, the changed object id(s) and their classification, the
+    page number, and the exact before -> after text.  Findings are advisory; a
+    human reviewer makes the final call.
+    """
+
+    from_revision: int
+    """Index of the earlier revision in the compared pair."""
+
+    to_revision: int
+    """Index of the later revision in the compared pair."""
+
+    page_index: int | None
+    """0-based page number the change appears on, or ``None`` if not page-bound."""
+
+    object_ids: tuple[str, ...]
+    """Changed object ids as ``"<obj> <gen>"`` strings (e.g. ``"12 0"``)."""
+
+    object_classes: tuple[ObjectChangeClass, ...]
+    """Classifications of the changed objects backing this finding."""
+
+    token_changes: tuple[TokenDiff, ...]
+    """Per-token before/after detail for the text change (empty for object-only)."""
+
+    is_high_value: bool
+    """True if any changed token matched a high-value pattern (amount/date/id)."""
+
+    high_value_kind: HighValueKind | None
+    """Highest-priority high-value kind among the changed tokens, if any."""
+
+    summary: str
+    """One-line human description of the finding."""
+
+    @property
+    def before_text(self) -> str:
+        """Concatenated before-text of the changed tokens (space-joined)."""
+        return " ".join(tc.before for tc in self.token_changes if tc.before)
+
+    @property
+    def after_text(self) -> str:
+        """Concatenated after-text of the changed tokens (space-joined)."""
+        return " ".join(tc.after for tc in self.token_changes if tc.after)
+
+
+@dataclass(frozen=True)
+class AnalysisReport:
+    """Top-level result of analysing one PDF file.
+
+    Produced by ``analyze_path`` / ``analyze_bytes`` and rendered to JSON or a
+    human summary by ``report.py``.  ``ok`` reports whether the *run* succeeded,
+    independent of the verdict — a clean single-revision PDF is ``ok=True`` with
+    an INCONCLUSIVE tier.  A file that could not be read is ``ok=False`` with an
+    ``error`` and no scoring.
+    """
+
+    path: str
+    """Filesystem path of the analysed input."""
+
+    ok: bool
+    """True if the analysis ran to completion (NOT a verdict)."""
+
+    error: str | None
+    """Why the run failed (e.g. 'file not found'); ``None`` when ``ok``."""
+
+    raw_size: int
+    """Size of the input in bytes (0 when unreadable)."""
+
+    candidate_count: int
+    """Total ``%%EOF`` candidate boundaries detected (valid or not)."""
+
+    revision_count: int
+    """Number of revisions successfully reconstructed."""
+
+    reconstruction_failures: int
+    """Number of detected revisions that could not be reconstructed."""
+
+    scoring: ScoringResult | None
+    """The scoring result, or ``None`` when the run failed before scoring."""
+
+    findings: tuple[Finding, ...]
+    """Every flagged change with before -> after evidence."""
+
+    text_changes: tuple[TextChange, ...]
+    """Full text-diff detail per consecutive revision pair (for the JSON output)."""
+
+    object_diffs: tuple[ObjectDiff, ...]
+    """Full object-diff detail per consecutive revision pair (for the JSON output)."""
+
+    notes: tuple[str, ...]
+    """Aggregated diagnostics from detection, reconstruction, and diffing."""

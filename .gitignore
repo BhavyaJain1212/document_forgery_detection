@@ -28,6 +28,6 @@ htmlcov/
 # Project artifacts
 # Generated test fixtures and analysis output (sensitive insurance records must
 # never be committed). Keep the generator script, not the PDFs it produces.
-tests/_fixtures/
+tests/fixtures/
 *.out.json
 *.report.txt
