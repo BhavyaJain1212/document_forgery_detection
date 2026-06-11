@@ -134,10 +134,10 @@ advisory; a human reviewer decides.
 
 ## Module layout
 
-> Status: **PROPOSED — awaiting owner approval.** No detection logic is
-> implemented yet. The package directory exists with only `__init__.py` so the
-> project installs cleanly (src layout). Module files below are created only
-> after the layout is approved.
+> Status: **APPROVED (2026-06-11).** Stage 1 is a subpackage,
+> `pdf_forgery/revision_recovery/`, so later stages (`font_fingerprint/`,
+> `ocr_crosscheck/`) become sibling subpackages. Implementation underway —
+> see the Progress log for what exists vs. proposed.
 
 Package name: `pdf_forgery` (under `src/`). Python `>=3.11` (local interpreter
 is 3.12; no 3.11-specific build available on this machine — 3.12 satisfies the
@@ -151,45 +151,58 @@ document_forgery_detection/
 ├── .gitignore
 ├── src/
 │   └── pdf_forgery/
-│       ├── __init__.py        # version + top-level analyze() facade (re-exports)
-│       ├── config.py          # Config dataclass: ALL thresholds, score bands,
-│       │                      #   high-value regexes, normalization toggles.
-│       │                      #   Nothing magic is hard-coded outside here.
-│       ├── models.py          # dataclasses: Revision, ObjectChange, TextChange,
-│       │                      #   Finding, AnalysisReport. Pure data, no logic.
-│       ├── revisions/
-│       │   ├── __init__.py
-│       │   ├── detect.py      # scan raw bytes: %%EOF markers, /Prev chain,
-│       │   │                  #   xref/startxref sections -> candidate boundaries
-│       │   └── reconstruct.py # truncate bytes[0:boundary]; validate each by
-│       │                      #   loading with pikepdf; emit Revision objects.
-│       │                      #   A detected-but-unloadable boundary is kept and
-│       │                      #   flagged (never silently dropped).
-│       ├── extract/
-│       │   ├── __init__.py
-│       │   ├── text.py        # per-page text-layer extraction (pdfminer.six);
-│       │   │                  #   returns {page_index: raw_text}
-│       │   └── normalize.py   # NFC, collapse whitespace, strip ZW/soft-hyphen,
-│       │                      #   trim; tokenizer (whitespace split). One place
-│       │                      #   so text + object diffs normalize identically.
-│       ├── diff/
-│       │   ├── __init__.py
-│       │   ├── textdiff.py    # difflib token-level diff per page (aligned by
-│       │   │                  #   page index) + char-level diff on changed tokens;
-│       │   │                  #   marks substantive vs whitespace-only.
-│       │   └── objectdiff.py  # overridden-object detection between consecutive
-│       │                      #   revisions + classification into CONTENT /
-│       │                      #   SIGNATURE / MARKUP / OVERLAY / FORM_FILL /
-│       │                      #   FIELD_EDIT / META.
-│       ├── highvalue.py       # high-value token pattern matchers (amount/date
-│       │                      #   strong; ID-like weak). Driven by config regexes.
-│       ├── scoring.py         # combine text + object diffs -> tier + score band
-│       │                      #   + evidence, per the rubric. Thresholds from config.
-│       ├── report.py          # render AnalysisReport -> JSON (machine) and a
-│       │                      #   human summary showing before -> after text.
-│       └── cli.py             # entry point: single PDF or directory (batch);
-│                              #   --json / --summary output; never crashes on a
-│                              #   bad file (reports + continues).
+│       ├── __init__.py        # version
+│       ├── cli.py             # shared entry point; for now dispatches to stage 1.
+│       │                      #   Rules: no flags -> human summary to stdout;
+│       │                      #   --json <path> writes machine JSON; --summary
+│       │                      #   forces the summary even with --json; a directory
+│       │                      #   arg -> batch, ONE combined JSON array (one entry
+│       │                      #   per file, top-level only, no recursion); exit code
+│       │                      #   reflects RUN success only, NEVER the verdict.
+│       └── revision_recovery/         # STAGE 1 (this stage)
+│           ├── __init__.py            # stage facade: analyze_path() re-export
+│           ├── config.py              # Config dataclass: ALL thresholds, score
+│           │                          #   bands, high-value regexes, normalization
+│           │                          #   toggles. Nothing magic hard-coded outside.
+│           ├── models.py              # dataclasses: EOFMarker, XrefSection,
+│           │                          #   RevisionBoundary, DetectionResult,
+│           │                          #   Revision, ObjectChange, TextChange,
+│           │                          #   Finding, AnalysisReport. Pure data.
+│           ├── detect.py              # scan raw bytes: %%EOF markers, /Prev chain,
+│           │                          #   xref/startxref sections -> candidate
+│           │                          #   RevisionBoundary list (no loading here).
+│           ├── reconstruct.py         # truncate bytes[0:boundary]; validate each
+│           │                          #   by loading with pikepdf; emit Revision
+│           │                          #   objects. A detected-but-unloadable
+│           │                          #   boundary is kept and flagged (never
+│           │                          #   silently dropped).
+│           ├── extract/
+│           │   ├── __init__.py
+│           │   ├── text.py            # per-page text-layer extraction via
+│           │   │                      #   pdfminer.six (deterministic); the text
+│           │   │                      #   diff uses ONLY this.
+│           │   ├── words.py           # pdfplumber word-level bounding boxes,
+│           │   │                      #   used ONLY by the OVERLAY check (annot
+│           │   │                      #   rect overlapping a text region).
+│           │   └── normalize.py       # NFC, collapse whitespace, strip
+│           │                          #   ZW/soft-hyphen, trim; tokenizer. Shared
+│           │                          #   so text + object diffs normalize alike.
+│           ├── diff/
+│           │   ├── __init__.py
+│           │   ├── textdiff.py        # difflib token-level diff per page (aligned
+│           │   │                      #   by page index) + char-level diff on
+│           │   │                      #   changed tokens; substantive vs whitespace.
+│           │   └── objectdiff.py      # overridden-object detection between
+│           │                          #   consecutive revisions + classification:
+│           │                          #   CONTENT / SIGNATURE / MARKUP / OVERLAY /
+│           │                          #   FORM_FILL / FIELD_EDIT / META. OVERLAY
+│           │                          #   geometry uses extract/words.py.
+│           ├── highvalue.py           # high-value token matchers (amount/date
+│           │                          #   strong; ID-like weak). Config-driven.
+│           ├── scoring.py             # combine text + object diffs -> tier + score
+│           │                          #   band + evidence per rubric. Config thresholds.
+│           └── report.py              # render AnalysisReport -> JSON (machine) and
+│                                      #   a human summary showing before -> after.
 ├── scripts/
 │   └── make_fixtures.py       # generate: clean.pdf, edited_incremental.pdf
 │                              #   (known-positive, text changed via incremental
@@ -197,7 +210,8 @@ document_forgery_detection/
 │                              #   (known-negative). Deterministic output.
 └── tests/
     ├── conftest.py            # build fixtures into a tmp dir once per session
-    ├── test_revisions.py      # detect/reconstruct: revision count, validation
+    ├── test_detect.py         # revision detection over synthetic raw bytes
+    ├── test_reconstruct.py    # truncate + load-validate; unloadable kept & flagged
     ├── test_objectdiff.py     # classification of overridden objects
     ├── test_textdiff.py       # normalization + substantive-change detection
     ├── test_scoring.py        # tier/score boundaries from the rubric
@@ -213,9 +227,10 @@ pair: `extract.text` + `extract.normalize` → `diff.textdiff` and
 `report` (JSON + human summary).
 
 ### Why this split
+- **Stage 1 is a subpackage** (`revision_recovery/`); later stages
+  (`font_fingerprint/`, `ocr_crosscheck/`) are siblings under `pdf_forgery/`.
 - **Each stage is a pure function over data models** (`models.py`), so later
-  stages (font fingerprinting, OCR cross-check) plug in at the diff/scoring layer
-  without touching revision recovery.
+  stages plug in at the diff/scoring layer without touching revision recovery.
 - **All thresholds and regexes live in `config.py`** — the rubric demands every
   threshold be configurable.
 - **`normalize.py` is shared** so text-diff and object-diff can't drift apart.
@@ -223,12 +238,20 @@ pair: `extract.text` + `extract.normalize` → `diff.textdiff` and
   becomes a flagged Finding (feeds the MEDIUM "detected but not reconstructed"
   rule), satisfying "never silently drop it."
 
-### Open questions for owner (before implementation)
-1. Package name `pdf_forgery` OK, or prefer something else?
-2. Text extraction: standardize on **pdfminer.six** (pdfplumber wraps it; we'd
-   keep both as deps per spec but use pdfminer directly for determinism)?
-3. CLI surface: `pdf-forgery <path> [--json out.json] [--summary]` with a
-   directory argument triggering batch — acceptable?
+### Resolved decisions (owner-approved 2026-06-11)
+1. **Package name** `pdf_forgery`; Stage 1 lives in `pdf_forgery/revision_recovery/`.
+2. **Text extraction** is **pdfminer.six** only, for deterministic output — it
+   drives the text diff. **pdfplumber** stays a dependency but is used *only* in
+   `extract/words.py` for word-level bounding boxes feeding the OVERLAY check
+   (annotation rect overlapping a text region). It is never used for the text diff.
+3. **CLI** (`pdf-forgery <path>`):
+   - No flags → human-readable summary to **stdout**.
+   - `--json <path>` → write machine-readable JSON to that path.
+   - `--summary` → force the human summary even when `--json` is set.
+   - **Directory arg → batch**: ONE combined JSON array, one entry per file;
+     top-level only, **no recursion**; not scattered per-file outputs.
+   - **Exit code reflects RUN success only, never the verdict.** A HIGH finding
+     does not change the exit code (confidence is advisory).
 
 ---
 
@@ -244,11 +267,28 @@ A running checklist, updated at the end of every task.
   - [x] Short `README.md` (method + how to run).
   - [x] `git init` + initial commit.
   - [x] Module layout PROPOSED in this file.
-  - [ ] **BLOCKED on owner review of "Module layout" before any implementation.**
-- [ ] Stage 1 / Task 1 — revisions.detect + reconstruct (after approval)
-- [ ] Stage 1 / Task 2 — extract.text + normalize
-- [ ] Stage 1 / Task 3 — diff.textdiff + diff.objectdiff + highvalue
-- [ ] Stage 1 / Task 4 — scoring
-- [ ] Stage 1 / Task 5 — report + cli
-- [ ] Stage 1 / Task 6 — scripts/make_fixtures.py (known +/- cases)
-- [ ] Stage 1 / Task 7 — tests (assert HIGH on positive, INCONCLUSIVE on negative)
+  - [x] Owner reviewed & APPROVED layout (2026-06-11) with 3 refinements:
+    stage-1 subpackage `revision_recovery/`; pdfminer for text / pdfplumber only
+    for OVERLAY word boxes; CLI output/exit-code rules. Layout updated.
+- [x] **Stage 1 / Task 1 — revision detection (`detect.py`)** (2026-06-11)
+  - [x] `revision_recovery/` subpackage created; `models.py` with detection
+    dataclasses (`EOFMarker`, `XrefSection`, `RevisionBoundary`, `DetectionResult`).
+  - [x] `detect.py`: pure raw-byte scan — every `%%EOF`, `startxref`+pointer,
+    `/Prev` chain → ordered candidate `RevisionBoundary` list. No loading here
+    (reports all markers incl. in-stream `%%EOF`; reconstruction validates).
+  - [x] Read-only `detect_from_path`; empty/headerless/marker-less/missing-file
+    inputs reported via `notes`, never raise.
+  - [x] `tests/test_detect.py` — 17 tests over synthetic bytes (single/multi
+    revision, in-stream `%%EOF`, EOL handling, read-only guarantee). All pass.
+  - [x] Dev env: `.venv` (Python 3.12) with deps installed; package editable-installed.
+  - Note: system `pip` is Python 3.10 and PEP-668 externally-managed — use
+    `./.venv/bin/python -m pytest` to run the suite.
+- [ ] Stage 1 / Task 2 — `reconstruct.py` (truncate + pikepdf load-validate;
+      unloadable boundary kept & flagged)
+- [ ] Stage 1 / Task 3 — `extract/text.py` (pdfminer) + `extract/normalize.py`
+      + `extract/words.py` (pdfplumber, OVERLAY only)
+- [ ] Stage 1 / Task 4 — `diff/textdiff.py` + `diff/objectdiff.py` + `highvalue.py`
+- [ ] Stage 1 / Task 5 — `config.py` + `scoring.py`
+- [ ] Stage 1 / Task 6 — `report.py` + `cli.py`
+- [ ] Stage 1 / Task 7 — `scripts/make_fixtures.py` (known +/- cases)
+- [ ] Stage 1 / Task 8 — end-to-end tests (HIGH on positive, INCONCLUSIVE on negative)
