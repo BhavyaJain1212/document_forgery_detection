@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Project artifacts
+# Generated test fixtures and analysis output (sensitive insurance records must
+# never be committed). Keep the generator script, not the PDFs it produces.
+tests/_fixtures/
+*.out.json
+*.report.txt

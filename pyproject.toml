@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-forgery"
+version = "0.1.0"
+description = "Stage 1 PDF document-forgery detection via incremental-update revision recovery (fully local)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Bhavya Jain" }]
+dependencies = [
+    "pikepdf>=8,<10",
+    "pdfminer.six>=20231228",
+    "pdfplumber>=0.11",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
+[project.scripts]
+pdf-forgery = "pdf_forgery.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
