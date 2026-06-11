@@ -110,11 +110,31 @@ def test_startxref_attached_per_revision():
     assert tuple(x.pointer for x in result.xref_sections) == (9, 312)
 
 
-def test_eof_inside_stream_is_still_reported():
-    # Detection over-reports on purpose; it does not load/validate.
+def test_eof_inside_stream_is_flagged_invalid_not_dropped():
+    # Both %%EOF markers are reported (never silently dropped), but the in-stream
+    # one is flagged invalid so it is not counted as a real revision.
     result = detect(_eof_inside_stream())
-    assert result.revision_count == 2  # the stray in-stream %%EOF + the real one
-    assert result.is_multi_revision is True
+
+    assert result.candidate_count == 2  # nothing dropped
+    assert result.revision_count == 1  # only the real boundary counts
+    assert result.is_multi_revision is False
+
+    in_stream, real = result.boundaries
+    assert in_stream.valid is False
+    assert in_stream.invalid_reason and "stream" in in_stream.invalid_reason
+    assert real.valid is True
+    assert real.invalid_reason is None
+
+    # valid_boundaries exposes only the clean one
+    assert result.valid_boundaries == (real,)
+    assert any("invalid" in n.lower() for n in result.notes)
+
+
+def test_clean_revisions_are_all_valid():
+    result = detect(_two_revisions())
+    assert result.candidate_count == 2
+    assert [b.valid for b in result.boundaries] == [True, True]
+    assert all(b.invalid_reason is None for b in result.boundaries)
 
 
 # --------------------------------------------------------------------------- #

@@ -170,7 +170,11 @@ document_forgery_detection/
 │           │                          #   Finding, AnalysisReport. Pure data.
 │           ├── detect.py              # scan raw bytes: %%EOF markers, /Prev chain,
 │           │                          #   xref/startxref sections -> candidate
-│           │                          #   RevisionBoundary list (no loading here).
+│           │                          #   RevisionBoundary list. Cheap STRUCTURAL
+│           │                          #   validity flag (boundary must end with
+│           │                          #   'startxref <n>'); in-stream %%EOF kept
+│           │                          #   but valid=False. No PDF loading here —
+│           │                          #   authoritative load-test is reconstruct.
 │           ├── reconstruct.py         # truncate bytes[0:boundary]; validate each
 │           │                          #   by loading with pikepdf; emit Revision
 │           │                          #   objects. A detected-but-unloadable
@@ -274,12 +278,18 @@ A running checklist, updated at the end of every task.
   - [x] `revision_recovery/` subpackage created; `models.py` with detection
     dataclasses (`EOFMarker`, `XrefSection`, `RevisionBoundary`, `DetectionResult`).
   - [x] `detect.py`: pure raw-byte scan — every `%%EOF`, `startxref`+pointer,
-    `/Prev` chain → ordered candidate `RevisionBoundary` list. No loading here
-    (reports all markers incl. in-stream `%%EOF`; reconstruction validates).
+    `/Prev` chain → ordered candidate `RevisionBoundary` list with byte offsets.
+  - [x] Cheap STRUCTURAL validity flag: a clean boundary ends with
+    `startxref <n>` right before `%%EOF`; an in-stream `%%EOF` lacks that tail →
+    kept but `valid=False` (never dropped). Authoritative pikepdf load-test still
+    belongs to `reconstruct.py`. `revision_count`/`is_multi_revision` count only
+    VALID boundaries; `candidate_count`/`valid_boundaries` expose both views.
+    Verified the heuristic against real qpdf output (`startxref\n<n>\n%%EOF`).
   - [x] Read-only `detect_from_path`; empty/headerless/marker-less/missing-file
     inputs reported via `notes`, never raise.
-  - [x] `tests/test_detect.py` — 17 tests over synthetic bytes (single/multi
-    revision, in-stream `%%EOF`, EOL handling, read-only guarantee). All pass.
+  - [x] `tests/test_detect.py` — 18 tests over synthetic bytes (single/multi
+    revision, in-stream `%%EOF` flagged invalid, EOL handling, read-only
+    guarantee). All pass.
   - [x] Dev env: `.venv` (Python 3.12) with deps installed; package editable-installed.
   - Note: system `pip` is Python 3.10 and PEP-668 externally-managed — use
     `./.venv/bin/python -m pytest` to run the suite.

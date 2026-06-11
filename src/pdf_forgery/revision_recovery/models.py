@@ -72,6 +72,18 @@ class RevisionBoundary:
     """The ``/Prev`` value in this revision's trailer, if present (points at the
     previous revision's xref). Absent on the earliest revision."""
 
+    valid: bool = True
+    """Whether this ``%%EOF`` is a structurally clean revision boundary.
+
+    A *cheap* structural check (no PDF loading): a real boundary is immediately
+    preceded by ``startxref <offset>``. A ``%%EOF`` that sits inside stream data
+    has no such tail and is flagged ``valid=False`` instead of being dropped.
+    The authoritative load-test happens later in reconstruction.
+    """
+
+    invalid_reason: str | None = None
+    """Why this candidate was flagged ``valid=False`` (``None`` when valid)."""
+
 
 @dataclass(frozen=True)
 class DetectionResult:
@@ -84,7 +96,9 @@ class DetectionResult:
     """Every ``%%EOF`` occurrence found, in file order."""
 
     boundaries: tuple[RevisionBoundary, ...] = ()
-    """Candidate revisions, earliest -> latest. Equal in count to ``eof_markers``."""
+    """ALL candidate boundaries, earliest -> latest, equal in count to
+    ``eof_markers``. Includes structurally-invalid candidates (e.g. in-stream
+    ``%%EOF``) flagged ``valid=False`` — they are never silently dropped."""
 
     xref_sections: tuple[XrefSection, ...] = ()
     """Every ``startxref`` found, in file order."""
@@ -96,11 +110,21 @@ class DetectionResult:
     """Human-readable diagnostics (e.g. 'no %%EOF found'). Never raises; reports."""
 
     @property
-    def revision_count(self) -> int:
-        """Number of candidate revisions (pre load-validation)."""
+    def valid_boundaries(self) -> tuple[RevisionBoundary, ...]:
+        """Only the structurally clean candidate boundaries."""
+        return tuple(b for b in self.boundaries if b.valid)
+
+    @property
+    def candidate_count(self) -> int:
+        """Total ``%%EOF`` candidates found, valid or not."""
         return len(self.boundaries)
 
     @property
+    def revision_count(self) -> int:
+        """Number of structurally valid revisions (pre load-validation)."""
+        return len(self.valid_boundaries)
+
+    @property
     def is_multi_revision(self) -> bool:
-        """True if more than one candidate revision boundary was found."""
-        return len(self.boundaries) > 1
+        """True if more than one *valid* revision boundary was found."""
+        return self.revision_count > 1

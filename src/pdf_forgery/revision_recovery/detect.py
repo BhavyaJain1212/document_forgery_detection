@@ -38,6 +38,16 @@ _STARTXREF_RE = re.compile(rb"startxref\s+(\d+)")
 # separated from the integer by whitespace, so ``\s+`` is required.
 _PREV_RE = re.compile(rb"/Prev\s+(\d+)")
 
+# A structurally clean revision boundary ends with ``startxref <offset>`` right
+# before ``%%EOF`` (PDF 32000-1, 7.5.5). ``\Z`` anchors the match to the end of
+# the inspected window (the bytes immediately preceding the marker). A ``%%EOF``
+# living inside stream data has no such tail and is flagged invalid.
+_BOUNDARY_TAIL_RE = re.compile(rb"startxref\s+\d+\s*\Z")
+
+# How far back to look for the ``startxref <offset>`` tail. Comfortably covers
+# the keyword + a long byte offset + line terminators.
+_TAIL_WINDOW = 128
+
 
 def _consume_trailing_eol(raw: bytes, pos: int) -> int:
     """Return ``pos`` advanced past a single trailing line terminator, if any.
@@ -78,6 +88,18 @@ def _find_prev_pointers(raw: bytes) -> list[tuple[int, int]]:
     return [(m.start(), int(m.group(1))) for m in _PREV_RE.finditer(raw)]
 
 
+def _is_clean_boundary(raw: bytes, eof: EOFMarker, region_start: int) -> bool:
+    """True if ``%%EOF`` is preceded by ``startxref <offset>`` (a real boundary).
+
+    Cheap structural validation only — it proves the bytes *could* be truncated
+    here to a well-formed file tail, which a ``%%EOF`` buried in a stream cannot.
+    It does not load the PDF; that authoritative check is reconstruction's job.
+    """
+    window_start = max(region_start, eof.offset - _TAIL_WINDOW)
+    window = raw[window_start : eof.offset]
+    return _BOUNDARY_TAIL_RE.search(window) is not None
+
+
 def detect(raw: bytes) -> DetectionResult:
     """Scan raw PDF bytes and return candidate revision structure.
 
@@ -114,12 +136,21 @@ def detect(raw: bytes) -> DetectionResult:
             notes=tuple(notes),
         )
 
-    boundaries = _build_boundaries(eof_markers, xref_sections, prev_pairs)
+    boundaries = _build_boundaries(raw, eof_markers, xref_sections, prev_pairs)
 
-    if len(boundaries) == 1:
+    valid_count = sum(1 for b in boundaries if b.valid)
+    invalid_count = len(boundaries) - valid_count
+
+    if valid_count == 0:
+        notes.append("no structurally valid revision boundary found (every %%EOF looks in-stream)")
+    elif valid_count == 1:
         notes.append("single revision: INCONCLUSIVE for this method (needs later stages)")
     else:
-        notes.append(f"{len(boundaries)} candidate revisions found (pre load-validation)")
+        notes.append(f"{valid_count} valid revisions found (pre load-validation)")
+    if invalid_count:
+        notes.append(
+            f"{invalid_count} %%EOF marker(s) flagged invalid (in-stream; not a clean boundary)"
+        )
 
     return DetectionResult(
         raw_size=len(raw),
@@ -132,6 +163,7 @@ def detect(raw: bytes) -> DetectionResult:
 
 
 def _build_boundaries(
+    raw: bytes,
     eof_markers: list[EOFMarker],
     xref_sections: list[XrefSection],
     prev_pairs: list[tuple[int, int]],
@@ -140,7 +172,8 @@ def _build_boundaries(
 
     A revision spans *(previous EOF end, this EOF start)*. The relevant
     ``startxref`` and ``/Prev`` are the *last* such tokens before the EOF (a
-    revision can rewrite earlier ones; the closing pair wins).
+    revision can rewrite earlier ones; the closing pair wins). Each boundary is
+    also flagged ``valid``/``invalid`` by :func:`_is_clean_boundary`.
     """
     boundaries: list[RevisionBoundary] = []
     prev_end = 0
@@ -160,6 +193,13 @@ def _build_boundaries(
             None,
         )
 
+        clean = _is_clean_boundary(raw, eof, lo)
+        reason = (
+            None
+            if clean
+            else "%%EOF not preceded by 'startxref <offset>' (likely inside a stream)"
+        )
+
         boundaries.append(
             RevisionBoundary(
                 index=rev_index,
@@ -167,6 +207,8 @@ def _build_boundaries(
                 truncate_len=eof.end_offset,
                 startxref=startxref,
                 prev_pointer=prev_pointer,
+                valid=clean,
+                invalid_reason=reason,
             )
         )
         prev_end = eof.end_offset
