@@ -12,6 +12,7 @@ scoring, and report models will be added with their respective modules (see
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 
 
 @dataclass(frozen=True)
@@ -204,3 +205,84 @@ class ReconstructionResult:
     def is_multi_revision(self) -> bool:
         """True if more than one revision was successfully reconstructed."""
         return self.revision_count > 1
+
+
+# ---------------------------------------------------------------------------
+# Text-diff models (Task 4)
+# ---------------------------------------------------------------------------
+
+class HighValueKind(str, Enum):
+    """Category of a high-value token match.
+
+    ``str`` mixin lets the value serialize to plain JSON without extra work.
+    Priority for choosing among multiple matches: AMOUNT > DATE > ID_LIKE.
+    """
+
+    AMOUNT = "amount"
+    DATE = "date"
+    ID_LIKE = "id_like"
+
+
+@dataclass(frozen=True)
+class CharSpan:
+    """One segment of a character-level diff inside a changed token.
+
+    ``tag`` mirrors difflib opcode tags: ``"equal"``, ``"replace"``,
+    ``"insert"``, ``"delete"``.
+    """
+
+    tag: str
+    before: str
+    after: str
+
+
+@dataclass(frozen=True)
+class TokenDiff:
+    """Before/after for a single changed token, with character-level detail.
+
+    ``before`` is empty when the token was purely inserted; ``after`` is empty
+    when it was purely deleted.  ``high_value`` is ``None`` when neither side
+    matches a high-value pattern.
+    """
+
+    before: str
+    after: str
+    char_diff: tuple[CharSpan, ...] = ()
+    high_value: HighValueKind | None = None
+
+
+@dataclass(frozen=True)
+class PageTextDiff:
+    """Text-layer diff for one page between two consecutive revisions."""
+
+    page_index: int
+    before_text: str
+    """Normalized full-page text from the earlier revision."""
+
+    after_text: str
+    """Normalized full-page text from the later revision."""
+
+    token_changes: tuple[TokenDiff, ...]
+    is_substantive: bool
+    """True if >= 1 token was added, removed, or changed after normalization."""
+
+    has_high_value_change: bool
+    """True if any changed token matched a high-value pattern."""
+
+
+@dataclass(frozen=True)
+class TextChange:
+    """All page-level text changes between two consecutive revisions.
+
+    The primary output of ``diff.textdiff``. Consumed by ``scoring`` and
+    ``report``.
+    """
+
+    from_revision: int
+    to_revision: int
+    page_diffs: tuple[PageTextDiff, ...]
+    is_substantive: bool
+    """True if any page has a substantive text change."""
+
+    has_high_value_change: bool
+    notes: tuple[str, ...] = field(default_factory=tuple)

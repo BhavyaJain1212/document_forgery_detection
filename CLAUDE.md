@@ -311,9 +311,45 @@ A running checklist, updated at the end of every task.
     xref + `/Prev` trailer + startxref + `%%EOF`). Covers 1- & 2-revision load,
     exact-truncation + independent loadability, unloadable/encrypted failures,
     invalid-boundary skip, read-only guarantee. Suite: 30 pass.
-- [ ] Stage 1 / Task 3 — `extract/text.py` (pdfminer) + `extract/normalize.py`
-      + `extract/words.py` (pdfplumber, OVERLAY only)
-- [ ] Stage 1 / Task 4 — `diff/textdiff.py` + `diff/objectdiff.py` + `highvalue.py`
+- [x] **Stage 1 / Task 3 — `extract/text.py` + `extract/normalize.py` + `extract/words.py`** (2026-06-11)
+  - [x] `normalize(text)`: NFC, strip U+200B/C/D + U+00AD (soft hyphen), collapse
+    whitespace, trim. `tokenize(text)`: whitespace split. Both pure functions;
+    shared by textdiff and objectdiff so they can never drift apart.
+  - [x] `extract_text_per_page(data: bytes) -> list[str]`: pdfminer.six via
+    `extract_pages`; collects `LTTextContainer` text per page; one raw string per
+    page (0-based). Never crashes — total failure returns `[]`.
+  - [x] `extract_words_per_page(data: bytes) -> list[list[WordBox]]`: pdfplumber,
+    OVERLAY check only. `WordBox` frozen dataclass (`text`, `x0`, `top`, `x1`,
+    `bottom`; pdfplumber coordinate system). Never crashes — failure returns `[]`.
+  - [x] `tests/test_extract.py` — 47 tests: 16 normalize, 7 tokenize, 10 text
+    extraction (blank/text/multi-page/malformed), 2 WordBox, 12 words extraction.
+    `_text_pdf` fixture builds Type1/Helvetica pages with pikepdf content streams.
+    Suite: 77 pass.
+- [x] **Stage 1 / Task 4a — `diff/textdiff.py` + `highvalue.py`** (2026-06-11)
+  - [x] `highvalue.py`: `classify_token(token) -> HighValueKind | None` and
+    `classify_change(before, after) -> HighValueKind | None`. Three tiers:
+    AMOUNT (strong) — optional `₹/$`/`Rs`/`INR` prefix + number with optional
+    Indian/Western comma grouping and decimal; also standalone currency symbols.
+    DATE (strong) — `dd/mm/yyyy`, `dd-mm-yyyy`, ISO 8601 `yyyy-mm-dd`.
+    ID_LIKE (weak/noisy) — any token with a 6+-char alphanumeric run.
+    Priority AMOUNT > DATE > ID_LIKE. All patterns are module-level compiled
+    constants (Task 5/config.py will expose them as configurable overrides).
+    Month-name dates span multiple tokens; noted in comment, not handled.
+  - [x] `models.py` additions: `HighValueKind(str, Enum)`, `CharSpan`,
+    `TokenDiff`, `PageTextDiff`, `TextChange` (pure data, frozen dataclasses).
+  - [x] `diff/__init__.py` + `diff/textdiff.py`:
+    `diff_normalized_pages(pages_a, pages_b, from_revision, to_revision)`
+    (public, independently testable) and `diff_text(rev_a, rev_b)` (full
+    pipeline). Token-level diff via `SequenceMatcher(autojunk=False)`;
+    `replace` opcodes paired with `zip_longest`; char-level diff via a second
+    `SequenceMatcher` on the token strings. Substantive iff >= 1 TokenDiff
+    produced. High-value flag propagated from TokenDiff → PageTextDiff →
+    TextChange. Page count mismatch noted. Extraction failures noted.
+  - [x] `tests/test_textdiff.py` — 61 tests: 25 classify_token/classify_change,
+    36 diff_normalized_pages (identical/whitespace/substantive/char-diff/
+    high-value/page-alignment/indices/types) + 4 diff_text with real revisions.
+    Suite: 138 pass.
+- [ ] Stage 1 / Task 4b — `diff/objectdiff.py`
 - [ ] Stage 1 / Task 5 — `config.py` + `scoring.py`
 - [ ] Stage 1 / Task 6 — `report.py` + `cli.py`
 - [ ] Stage 1 / Task 7 — `scripts/make_fixtures.py` (known +/- cases)
