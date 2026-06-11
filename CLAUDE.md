@@ -293,8 +293,24 @@ A running checklist, updated at the end of every task.
   - [x] Dev env: `.venv` (Python 3.12) with deps installed; package editable-installed.
   - Note: system `pip` is Python 3.10 and PEP-668 externally-managed — use
     `./.venv/bin/python -m pytest` to run the suite.
-- [ ] Stage 1 / Task 2 — `reconstruct.py` (truncate + pikepdf load-validate;
-      unloadable boundary kept & flagged)
+- [x] **Stage 1 / Task 2 — revision reconstruction (`reconstruct.py`)** (2026-06-11)
+  - [x] `reconstruct(raw, detection)`: for each VALID boundary, truncate
+    `raw[0:truncate_len]` and load with pikepdf; returns ordered `Revision` list
+    (re-indexed from 0, with page_count + is_encrypted), earliest first.
+  - [x] Authoritative load gate: a boundary that won't open becomes a
+    `ReconstructionFailure` (reported + skipped, never crashes, never dropped) —
+    feeds the MEDIUM "detected but not reconstructed" rule. Cases handled:
+    corrupt/unloadable (`pikepdf.PdfError`), encrypted-password-required
+    (`pikepdf.PasswordError`), and any unexpected error (broad catch).
+    Empty-user-password encryption opens and is flagged `is_encrypted=True`.
+  - [x] Models: `Revision`, `ReconstructionFailure`, `ReconstructionResult`
+    (with `revision_count`/`has_failures`/`is_multi_revision`).
+  - [x] Read-only `reconstruct_from_path`; missing/dir/unreadable reported via notes.
+  - [x] `tests/test_reconstruct.py` — 12 tests using REAL pikepdf-built PDFs incl.
+    a genuine incremental-update builder (`_append_incremental`: appends obj +
+    xref + `/Prev` trailer + startxref + `%%EOF`). Covers 1- & 2-revision load,
+    exact-truncation + independent loadability, unloadable/encrypted failures,
+    invalid-boundary skip, read-only guarantee. Suite: 30 pass.
 - [ ] Stage 1 / Task 3 — `extract/text.py` (pdfminer) + `extract/normalize.py`
       + `extract/words.py` (pdfplumber, OVERLAY only)
 - [ ] Stage 1 / Task 4 — `diff/textdiff.py` + `diff/objectdiff.py` + `highvalue.py`

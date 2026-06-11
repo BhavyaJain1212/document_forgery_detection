@@ -128,3 +128,79 @@ class DetectionResult:
     def is_multi_revision(self) -> bool:
         """True if more than one *valid* revision boundary was found."""
         return self.revision_count > 1
+
+
+@dataclass(frozen=True)
+class Revision:
+    """A historical revision recovered by truncating + load-validating the bytes.
+
+    ``data`` is exactly ``raw[0:truncate_len]`` and is itself a complete, loadable
+    PDF (qpdf opened it). Downstream stages re-open ``data`` to extract text and
+    inspect objects, so each revision is self-contained.
+    """
+
+    index: int
+    """0-based position among *successfully reconstructed* revisions (earliest = 0)."""
+
+    source_boundary_index: int
+    """Index of the originating :class:`RevisionBoundary` in the detection result."""
+
+    truncate_len: int
+    """Byte length this revision was truncated to (``len(data)``)."""
+
+    page_count: int
+    """Number of pages qpdf reported for this revision."""
+
+    is_encrypted: bool
+    """True if the revision is encrypted but opened with an empty password."""
+
+    data: bytes = field(repr=False)
+    """The reconstructed revision bytes (``raw[0:truncate_len]``). A complete PDF.
+    Excluded from ``repr`` to avoid dumping the whole file."""
+
+
+@dataclass(frozen=True)
+class ReconstructionFailure:
+    """A valid boundary that could not be loaded as a PDF (reported, not dropped).
+
+    Feeds the scoring rubric's MEDIUM rule: "a revision was detected but could not
+    be reconstructed/extracted (corruption or evasion -- never silently drop it)."
+    """
+
+    source_boundary_index: int
+    """Index of the originating :class:`RevisionBoundary` in the detection result."""
+
+    truncate_len: int
+    """Byte length the failed truncation would have had."""
+
+    reason: str
+    """Why the load failed (e.g. 'encrypted: password required', 'unloadable: ...')."""
+
+
+@dataclass(frozen=True)
+class ReconstructionResult:
+    """Outcome of reconstructing revisions from one PDF's detected boundaries."""
+
+    revisions: tuple[Revision, ...] = ()
+    """Successfully loaded revisions, earliest -> latest, re-indexed from 0."""
+
+    failures: tuple[ReconstructionFailure, ...] = ()
+    """Valid boundaries that would not load. Surfaced for scoring; never dropped."""
+
+    notes: tuple[str, ...] = field(default_factory=tuple)
+    """Human-readable diagnostics. Never raises; reports."""
+
+    @property
+    def revision_count(self) -> int:
+        """Number of successfully reconstructed revisions."""
+        return len(self.revisions)
+
+    @property
+    def has_failures(self) -> bool:
+        """True if any detected revision could not be reconstructed."""
+        return len(self.failures) > 0
+
+    @property
+    def is_multi_revision(self) -> bool:
+        """True if more than one revision was successfully reconstructed."""
+        return self.revision_count > 1
