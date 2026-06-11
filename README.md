@@ -9,9 +9,9 @@ each revision and proves what text changed between them.
 Fully local — **no network calls, no cloud APIs** (the target documents are
 sensitive insurance records). Input files are treated as strictly read-only.
 
-> **Status:** Stage 1 scaffolding only. The detection modules are *proposed* (see
-> the **Module layout** section of [`CLAUDE.md`](./CLAUDE.md)) and awaiting
-> review before implementation. The CLI is not wired up yet.
+> **Status:** Stage 1 is partially implemented: revision detection,
+> reconstruction, extraction, text diff, and object diff are in place. Scoring,
+> reports, fixtures, and the CLI are not wired up yet.
 
 ## Method (summary)
 

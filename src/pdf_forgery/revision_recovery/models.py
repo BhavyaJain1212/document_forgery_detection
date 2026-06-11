@@ -4,8 +4,7 @@ Pure data, no logic. Each pipeline stage is a function over these structures so
 later stages (font fingerprinting, OCR cross-check) can plug in without touching
 revision recovery.
 
-Only the revision-*detection* models exist so far. Reconstruction, diff,
-scoring, and report models will be added with their respective modules (see
+Scoring and report models will be added with their respective modules (see
 ../../CLAUDE.md "Module layout").
 """
 
@@ -286,3 +285,56 @@ class TextChange:
 
     has_high_value_change: bool
     notes: tuple[str, ...] = field(default_factory=tuple)
+
+
+# ---------------------------------------------------------------------------
+# Object-diff models (Task 4b)
+# ---------------------------------------------------------------------------
+
+class ObjectChangeClass(str, Enum):
+    """Classification of a changed PDF object between consecutive revisions.
+
+    ``str`` mixin lets values serialize to plain JSON without extra work.
+    """
+
+    CONTENT = "content"
+    SIGNATURE = "signature"
+    MARKUP = "markup"
+    OVERLAY = "overlay"
+    FORM_FILL = "form_fill"
+    FIELD_EDIT = "field_edit"
+    META = "meta"
+
+
+@dataclass(frozen=True)
+class ObjectChange:
+    """One changed or new PDF object and its forgery-relevant classification."""
+
+    obj_num: int
+    gen_num: int
+    change_class: ObjectChangeClass
+    page_index: int | None
+    """0-based page index, if determinable from the PDF structure."""
+
+    is_new: bool
+    """True if the object is absent from the earlier revision (newly added)."""
+
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ObjectDiff:
+    """All object-level changes between two consecutive revisions."""
+
+    from_revision: int
+    to_revision: int
+    changes: tuple[ObjectChange, ...]
+    notes: tuple[str, ...] = ()
+
+    @property
+    def by_class(self) -> dict[ObjectChangeClass, list[ObjectChange]]:
+        """Changes grouped by classification."""
+        result: dict[ObjectChangeClass, list[ObjectChange]] = {}
+        for c in self.changes:
+            result.setdefault(c.change_class, []).append(c)
+        return result

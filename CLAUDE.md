@@ -349,7 +349,25 @@ A running checklist, updated at the end of every task.
     36 diff_normalized_pages (identical/whitespace/substantive/char-diff/
     high-value/page-alignment/indices/types) + 4 diff_text with real revisions.
     Suite: 138 pass.
-- [ ] Stage 1 / Task 4b — `diff/objectdiff.py`
+- [x] **Stage 1 / Task 4b — `diff/objectdiff.py`** (2026-06-11)
+  - [x] `ObjectChangeClass`, `ObjectChange`, and `ObjectDiff` models added for
+    the exact rubric categories: CONTENT, SIGNATURE, MARKUP, OVERLAY, FORM_FILL,
+    FIELD_EDIT, META.
+  - [x] `diff_objects(rev_a, rev_b)`: opens consecutive reconstructed revisions
+    with pikepdf, builds indirect-object signatures, reports every changed or
+    newly added object in the later revision, and keeps errors in notes.
+  - [x] `classify_changed_object(...)`: isolated/testable classifier. Handles
+    page `/Contents` streams and changed page `/Contents` references as CONTENT,
+    `/FT /Sig` and signature dictionaries as SIGNATURE, annotations as MARKUP or
+    OVERLAY, form `/V` empty->filled as FORM_FILL, form `/V` prior-value changes
+    as FIELD_EDIT, and `/Metadata`/XMP/`/Info`/catalog structural objects as META.
+  - [x] OVERLAY geometry uses `extract/words.py` word boxes and converts PDF
+    bottom-left coordinates to pdfplumber top-left coordinates before overlap
+    checks.
+  - [x] `tests/test_objectdiff.py` — 37 tests for changed-object detection,
+    isolated geometry, CONTENT/SIGNATURE/MARKUP/OVERLAY/FORM_FILL/FIELD_EDIT/META
+    classification, mixed changes, unloadable inputs, and grouping. Suite:
+    175 pass.
 - [ ] Stage 1 / Task 5 — `config.py` + `scoring.py`
 - [ ] Stage 1 / Task 6 — `report.py` + `cli.py`
 - [ ] Stage 1 / Task 7 — `scripts/make_fixtures.py` (known +/- cases)
