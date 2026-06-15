@@ -7,15 +7,14 @@ the changed glyphs under a different font subset than their surrounding line —
 a fingerprint that survives even a single-revision "Save As" where revision
 recovery has nothing to compare.
 
-Detectors:
-    - subset-tag inconsistency within a line (same base face, two subset tags),
-    - document-baseline / line-context font-family deviation,
-    - both escalated only when they overlap a high-value token (amount / date /
-      ID), reusing ``revision_recovery.highvalue``.
+Detectors evaluate token-internal glyph seams first, then line-local, page-local,
+and document-global baselines. Only a confident high-value token with an internal
+mixed-font seam can independently reach HIGH; whole-token differences are
+supporting evidence capped below HIGH.
 
-Confidence (advisory, shared rubric): HIGH when a high-value token's font/subset
-breaks its line context; MEDIUM for an intra-line switch off a high-value token;
-LOW for benign multi-font styling; INCONCLUSIVE for a single uniform font.
+Confidence is advisory: HIGH for a confident amount/date/ID with an intra-token
+glyph seam; MEDIUM for supporting local differences; LOW for benign styling or
+weak global evidence; INCONCLUSIVE for a single uniform font.
 """
 
 from .adapter import (
@@ -52,6 +51,7 @@ from .fonts import (
 )
 from .models import (
     ConfidenceTier,
+    ClassificationStrength,
     FontFinding,
     FontFindingKind,
     FontReport,
@@ -59,6 +59,7 @@ from .models import (
     HighValueKind,
     TextLine,
     Token,
+    TokenCandidate,
 )
 from .scoring import score_findings
 from .stage import FontForensicsStage
@@ -106,4 +107,6 @@ __all__ = [
     "Token",
     "ConfidenceTier",
     "HighValueKind",
+    "ClassificationStrength",
+    "TokenCandidate",
 ]

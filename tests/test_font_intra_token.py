@@ -193,20 +193,21 @@ def test_placeholder_majority_not_flagged():
 # --------------------------------------------------------------------------- #
 
 def test_dedup_against_token_level_detector():
-    # Context is Times-Roman; the amount token is MOSTLY Helvetica (so its
-    # dominant font differs from the line -> token-level substitution HIGH) with
-    # ONE Courier glyph (which would otherwise trip the intra-token detector).
+    # Context is Times-Roman; the amount token is mostly Helvetica with one
+    # Courier glyph. Token-internal evidence takes priority over the coarser
+    # whole-token line-context difference.
     line = build_line(
         [_uniform("Paid", TIMES), _uniform("total", TIMES), _uniform("here", TIMES),
          _with_foreign("50,000", HELV, COURIER, 0)]
     )
     findings, _ = detect_findings(line)
-    # Exactly one finding for the token: the token-level substitution, NOT a
-    # duplicate intra-token finding.
+    # Exactly one finding for the token: the intra-token seam, with no duplicate
+    # whole-token finding.
     amount_findings = [f for f in findings if f.token == "50,000"]
     assert len(amount_findings) == 1
-    assert amount_findings[0].kind is FontFindingKind.HIGH_VALUE_SUBSTITUTION
-    assert _intra(findings) == []
+    assert amount_findings[0].kind is FontFindingKind.INTRA_TOKEN_FONT_MIX
+    assert amount_findings[0].tier is ConfidenceTier.HIGH
+    assert _intra(findings) == amount_findings
 
 
 # --------------------------------------------------------------------------- #

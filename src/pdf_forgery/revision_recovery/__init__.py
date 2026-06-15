@@ -33,7 +33,14 @@ from .stage import RevisionRecoveryStage
 from .detect import detect, detect_from_path
 from .diff.objectdiff import classify_changed_object, diff_objects
 from .diff.textdiff import diff_normalized_pages, diff_text
-from .highvalue import classify_change, classify_token
+from .highvalue import (
+    ClassificationStrength,
+    TokenCandidate,
+    TokenClassification,
+    classify_change,
+    classify_token,
+    classify_token_kind,
+)
 from .models import (
     AnalysisReport,
     CharSpan,
@@ -76,7 +83,11 @@ __all__ = [
     "diff_objects",
     # high-value classification
     "classify_token",
+    "classify_token_kind",
     "classify_change",
+    "ClassificationStrength",
+    "TokenCandidate",
+    "TokenClassification",
     # scoring
     "score",
     # orchestration

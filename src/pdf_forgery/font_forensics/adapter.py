@@ -36,6 +36,22 @@ def _font_finding_to_core(f: FontFinding) -> Finding:
         evidence.append(
             Evidence(label="minority_font", before=f.token_font, after=f.minority_font)
         )
+    if f.classification_strength is not None:
+        evidence.append(
+            Evidence(
+                label="classification_strength",
+                before="",
+                after=f.classification_strength.value,
+            )
+        )
+    if f.classification_signals:
+        evidence.append(
+            Evidence(
+                label="classification_signals",
+                before="",
+                after=", ".join(f.classification_signals),
+            )
+        )
         evidence.append(
             Evidence(label="suspicious_chars", before="", after=f.suspicious_text)
         )
@@ -147,6 +163,16 @@ def report_to_dict(report: FontReport) -> dict:
                 "conflicting_fonts": list(f.conflicting_fonts),
                 "bbox": [round(v, 2) for v in f.bbox],
                 "high_value": f.high_value.value if f.high_value else None,
+                "classification_strength": (
+                    f.classification_strength.value
+                    if f.classification_strength is not None
+                    else None
+                ),
+                "classification_candidates": [
+                    candidate.value for candidate in f.classification_candidates
+                ],
+                "classification_signals": list(f.classification_signals),
+                "baseline_scope": f.baseline_scope,
                 "minority_font": f.minority_font or None,
                 "suspicious_chars": f.suspicious_text or None,
                 "suspicious_glyph_indexes": list(f.suspicious_glyph_indexes),
@@ -195,6 +221,11 @@ def render_summary(report: FontReport) -> str:
                          f"(glyph index {list(f.suspicious_glyph_indexes)})")
         if f.high_value:
             lines.append(f"        high-value : {f.high_value.value}")
+        if f.classification_strength is not None:
+            lines.append(
+                f"        classify   : {f.classification_strength.value} "
+                f"({', '.join(c.value for c in f.classification_candidates)})"
+            )
         lines.append(f"        {f.reason}")
     lines.append("  (Confidence is advisory; a human reviewer decides.)")
     return "\n".join(lines)

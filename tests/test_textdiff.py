@@ -21,7 +21,12 @@ from pdf_forgery.revision_recovery.diff.textdiff import (
     diff_text,
 )
 from pdf_forgery.revision_recovery.detect import detect
-from pdf_forgery.revision_recovery.highvalue import classify_change, classify_token
+from pdf_forgery.revision_recovery.highvalue import (
+    ClassificationStrength,
+    TokenCandidate,
+    classify_change,
+    classify_token,
+)
 from pdf_forgery.revision_recovery.models import (
     CharSpan,
     HighValueKind,
@@ -188,6 +193,38 @@ class TestClassifyToken:
     def test_amount_beats_id_like(self):
         # "123456" has 6+ digits → both AMOUNT and ID_LIKE match, AMOUNT wins
         assert classify_token("123456") == HighValueKind.AMOUNT
+
+    def test_structured_amount_evidence(self):
+        result = classify_token("18071.23", context="Amount Due")
+        assert result is not None
+        assert result.primary is TokenCandidate.AMOUNT
+        assert result.strength is ClassificationStrength.STRONG
+        assert result.high_value_kind is HighValueKind.AMOUNT
+        assert {"two_decimal_places", "money_label"} <= set(result.signals)
+
+    def test_abn_context_resolves_long_digits_to_identifier(self):
+        result = classify_token("59547297213", context="ABN:")
+        assert result is not None
+        assert result.primary is TokenCandidate.IDENTIFIER
+        assert result.strength is ClassificationStrength.STRONG
+        assert result.high_value_kind is HighValueKind.ID_LIKE
+        assert "identifier_label" in result.signals
+        # Revision recovery keeps the historical digits-as-amount interpretation.
+        assert result.legacy_kind is HighValueKind.AMOUNT
+
+    def test_bare_integer_is_weak_unknown_numeric_for_contextual_callers(self):
+        result = classify_token("50000")
+        assert result is not None
+        assert result.primary is TokenCandidate.UNKNOWN_NUMERIC
+        assert result.strength is ClassificationStrength.WEAK
+        assert result.high_value_kind is None
+        assert result.legacy_kind is HighValueKind.AMOUNT
+
+    def test_explicit_currency_outranks_identifier_label(self):
+        result = classify_token("$100.00", context="Account Balance")
+        assert result is not None
+        assert result.primary is TokenCandidate.AMOUNT
+        assert result.strength is ClassificationStrength.STRONG
 
 
 class TestClassifyChange:

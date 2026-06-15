@@ -39,8 +39,10 @@ def test_forged_fixture_high(font_forged_pdf):
     f = report.findings[0]
     assert f.token == "50,000"
     assert f.high_value.value == "amount"
-    assert f.token_font == "GHIJKL+Helvetica"
+    assert f.token_font == "ABCDEF+Helvetica"
     assert f.context_font == "ABCDEF+Helvetica"
+    assert f.minority_font == "GHIJKL+Helvetica"
+    assert f.suspicious_text == "0"
     # bbox is the amount token's box.
     assert f.bbox[2] > f.bbox[0] and f.bbox[3] > f.bbox[1]
     assert any("high-value" in r for r in report.reasons)
@@ -116,7 +118,10 @@ def test_adapter_round_trip_and_core_finding(font_forged_pdf):
     assert token_ev.after == "50,000"
     fonts_ev = next(e for e in cf.evidence if e.label == "conflicting_fonts")
     assert fonts_ev.before == "ABCDEF+Helvetica"
-    assert fonts_ev.after == "GHIJKL+Helvetica"
+    assert fonts_ev.after == "ABCDEF+Helvetica"
+    minority_ev = next(e for e in cf.evidence if e.label == "minority_font")
+    assert minority_ev.before == "ABCDEF+Helvetica"
+    assert minority_ev.after == "GHIJKL+Helvetica"
 
 
 def test_render_json_and_summary(font_forged_pdf):

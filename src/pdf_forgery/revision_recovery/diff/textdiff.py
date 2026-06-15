@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 from ..extract.normalize import normalize, tokenize
 from ..extract.text import extract_text_per_page
-from ..highvalue import classify_change, classify_token
+from ..highvalue import classify_change, classify_token_kind
 from ..models import (
     CharSpan,
     HighValueKind,
@@ -97,7 +97,7 @@ def _diff_page(
                         before=old,
                         after="",
                         char_diff=_char_diff(old, ""),
-                        high_value=classify_token(old),
+                        high_value=classify_token_kind(old),
                     )
                 )
 
@@ -108,7 +108,7 @@ def _diff_page(
                         before="",
                         after=new,
                         char_diff=_char_diff("", new),
-                        high_value=classify_token(new),
+                        high_value=classify_token_kind(new),
                     )
                 )
 

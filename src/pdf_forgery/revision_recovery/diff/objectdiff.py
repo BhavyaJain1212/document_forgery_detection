@@ -3,6 +3,20 @@
 Detects which PDF objects were overridden between two Revision objects and
 classifies each into one of the seven change classes from the spec.
 
+How the changed-object SET is derived (important)
+-------------------------------------------------
+The set of objects "changed in revision k" is read from the cross-reference
+records that revision k *physically authored* inside its own appended byte range
+(``rev_b.data[len(rev_a.data):]``) — NOT by diffing two pikepdf object
+enumerations. qpdf's enumeration of a *truncated* revision depends on what its
+xref can resolve, so a truncated earlier revision can under-enumerate and make
+thousands of pre-existing objects look "new". Reading the increment's own xref
+(classic table, cross-reference stream, and any in-increment ``/XRefStm``)
+avoids that entirely: an increment that writes no object records — e.g. the
+184-byte hybrid/compatibility xref append that only adds an empty ``0 0``
+subsection plus a back-pointing ``/XRefStm`` — falls out as *zero* changed
+objects with no special-casing. See :func:`objects_written_in_increment`.
+
 Classification priority (mirrors the scoring rubric):
     SIGNATURE  — /FT /Sig widget or /Type /Sig dictionary
     FORM_FILL  — widget field whose /V changed from absent/empty to non-empty
@@ -23,6 +37,7 @@ classify_changed_object(...)
 
 from __future__ import annotations
 
+import re
 from io import BytesIO
 
 import pikepdf
@@ -58,46 +73,166 @@ def _obj_sig(obj: pikepdf.Object) -> bytes:
     return content
 
 
-def _build_sig_table(pdf: pikepdf.Pdf) -> dict[ObjGen, bytes]:
-    """Map each indirect object's (num, gen) to its signature bytes."""
-    result: dict[ObjGen, bytes] = {}
-    for obj in pdf.objects:
-        try:
-            result[obj.objgen] = _obj_sig(obj)
-        except Exception:
-            pass
-    return result
+# ---------------------------------------------------------------------------
+# xref-driven changed-object set (the increment's own cross-reference records)
+# ---------------------------------------------------------------------------
+
+# A cross-reference table subsection header: ``<first> <count>``.
+_SUBSEC_RE = re.compile(rb"(\d+)[ \t]+(\d+)[ \t]*\Z")
+# A 20-byte classic xref entry: 10-digit offset, 5-digit gen, then ``n``/``f``.
+_ENTRY_RE = re.compile(rb"(\d{10})[ \t]+(\d{5})[ \t]+([nf])[ \t]*\Z")
+# ``startxref <offset>`` — the increment's primary cross-reference pointer.
+_STARTXREF_RE = re.compile(rb"startxref\s+(\d+)")
+# ``/XRefStm <offset>`` — a hybrid file's pointer to a cross-reference stream.
+_XREFSTM_RE = re.compile(rb"/XRefStm\s+(\d+)")
 
 
-def _build_obj_lookup(pdf: pikepdf.Pdf) -> dict[ObjGen, pikepdf.Object]:
-    """Map each indirect object's (num, gen) to the live pikepdf Object."""
-    result: dict[ObjGen, pikepdf.Object] = {}
-    for obj in pdf.objects:
-        try:
-            result[obj.objgen] = obj
-        except Exception:
-            pass
-    return result
+def _last_int(pattern: re.Pattern[bytes], region: bytes) -> int | None:
+    """Return the integer captured by the *last* match of ``pattern`` (or None)."""
+    last: int | None = None
+    for m in pattern.finditer(region):
+        last = int(m.group(1))
+    return last
 
 
-def _changed_objgens(
-    sig_a: dict[ObjGen, bytes],
-    sig_b: dict[ObjGen, bytes],
-) -> tuple[tuple[ObjGen, bool], ...]:
-    """Return changed/new object IDs in the later revision.
+def _objects_from_classic_table(raw: bytes, off: int) -> set[ObjGen]:
+    """Parse a classic ``xref`` table at ``raw[off:]`` -> in-use ``(num, gen)``.
 
-    ``is_new`` is true when the object did not exist in the earlier revision.
-    Objects that existed only in the earlier revision are intentionally ignored:
-    the Stage 1 signal comes from objects present in the later reconstructed
-    revision, including overridden objects with the same objgen and newly added
-    objects referenced by overridden structures.
+    Each subsection header ``<first> <count>`` is followed by ``count`` 20-byte
+    entries; only type-``n`` (in-use) entries are collected. An empty ``0 0``
+    subsection yields nothing. Parsing stops at ``trailer`` or the first line
+    that is neither a header nor an entry. Never raises.
     """
-    changed: list[tuple[ObjGen, bool]] = []
-    for objgen in sorted(sig_b):
-        is_new = objgen not in sig_a
-        if is_new or sig_a[objgen] != sig_b[objgen]:
-            changed.append((objgen, is_new))
-    return tuple(changed)
+    result: set[ObjGen] = set()
+    head = re.match(rb"[ \t]*xref\b[ \t]*\r?\n?", raw[off : off + 32])
+    if head is None:
+        return result
+    body = raw[off + head.end() :]
+    tr = re.search(rb"\btrailer\b", body)
+    if tr is not None:
+        body = body[: tr.start()]
+    lines = re.split(rb"\r\n|\r|\n", body)
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
+        if not line:
+            continue
+        hm = _SUBSEC_RE.match(line)
+        if hm is None:
+            break
+        first, count = int(hm.group(1)), int(hm.group(2))
+        for k in range(count):
+            if i >= len(lines):
+                break
+            em = _ENTRY_RE.match(lines[i].strip())
+            i += 1
+            if em is not None and em.group(3) == b"n":
+                result.add((first + k, int(em.group(2))))
+    return result
+
+
+def _decode_xref_rows(data: bytes, widths: list[int], index: list[int]) -> set[ObjGen]:
+    """Decode an already-decompressed xref-stream payload -> in-use ``(num, gen)``.
+
+    ``/W`` gives the three field widths; ``/Index`` lists ``(first, count)`` runs.
+    Type-1 (in-use, uncompressed) and type-2 (compressed) records are collected;
+    type-2 objects always have generation 0. Never raises.
+    """
+    result: set[ObjGen] = set()
+    row_w = sum(widths)
+    if row_w <= 0 or len(widths) < 1:
+        return result
+    pairs = list(zip(index[0::2], index[1::2]))
+    pos = 0
+    for first, count in pairs:
+        for k in range(count):
+            row = data[pos : pos + row_w]
+            pos += row_w
+            if len(row) < row_w:
+                return result
+            fields: list[int | None] = []
+            o = 0
+            for w in widths:
+                fields.append(int.from_bytes(row[o : o + w], "big") if w > 0 else None)
+                o += w
+            typ = fields[0] if widths[0] > 0 else 1  # default type is 1 when W[0]==0
+            if typ == 1:
+                gen = fields[2] if (len(widths) > 2 and widths[2] > 0 and fields[2] is not None) else 0
+                result.add((first + k, gen))
+            elif typ == 2:
+                result.add((first + k, 0))
+    return result
+
+
+def _objects_from_xref_stream(raw: bytes, off: int, end: int) -> set[ObjGen]:
+    """Decode a cross-reference *stream* object whose definition starts at ``off``.
+
+    The stream is loaded via pikepdf (which applies the stream filter + any PNG
+    predictor), then its ``/W``/``/Index`` are decoded. The xref-stream object
+    itself is included (its record is authored in this increment). Never raises.
+    """
+    result: set[ObjGen] = set()
+    hm = re.match(rb"[ \t\r\n]*(\d+)[ \t]+(\d+)[ \t]+obj\b", raw[off : off + 48])
+    if hm is None:
+        return result
+    num, gen = int(hm.group(1)), int(hm.group(2))
+    try:
+        with pikepdf.open(BytesIO(raw[:end])) as pdf:
+            obj = pdf.get_object((num, gen))
+            if obj is None or not isinstance(obj, pikepdf.Stream):
+                return result
+            if str(obj.get("/Type")) != "/XRef":
+                return result
+            widths = [int(x) for x in obj.get("/W")]
+            size_obj = obj.get("/Size")
+            size = int(size_obj) if size_obj is not None else 0
+            idx = obj.get("/Index")
+            index = [int(x) for x in idx] if idx is not None else [0, size]
+            result |= _decode_xref_rows(obj.read_bytes(), widths, index)
+            result.add((num, gen))
+    except Exception:
+        return result
+    return result
+
+
+def _objects_from_xref_at(raw: bytes, off: int, end: int) -> set[ObjGen]:
+    """Dispatch a cross-reference at ``raw[off:]`` to the classic or stream reader."""
+    if re.match(rb"[ \t]*xref\b", raw[off : off + 16]) is not None:
+        return _objects_from_classic_table(raw, off)
+    return _objects_from_xref_stream(raw, off, end)
+
+
+def objects_written_in_increment(raw: bytes, start: int, end: int) -> set[ObjGen]:
+    """Object ``(num, gen)`` ids whose xref record is authored within ``raw[start:end)``.
+
+    This is the authoritative changed-object set for the revision whose bytes were
+    appended in ``[start, end)``. It reads the increment's *own* cross-reference
+    structure rather than diffing object enumerations:
+
+    * The increment's closing ``startxref <offset>`` points at its primary xref —
+      a classic table (parsed in place) or a cross-reference stream (decoded).
+    * A ``/XRefStm <offset>`` in the increment's trailer is resolved **only** if
+      the referenced stream physically lies within ``[start, end)``. A back-
+      pointer into an earlier revision (``offset < start``) authored nothing here
+      — this is exactly the hybrid/compatibility-append case, which therefore
+      yields an empty set.
+
+    Any cross-reference offset that falls outside ``[start, end)`` is ignored.
+    Malformed input returns an empty set; the function never raises.
+    """
+    if not (0 <= start < end <= len(raw)):
+        return set()
+    region = raw[start:end]
+    try:
+        written: set[ObjGen] = set()
+        for off in (_last_int(_STARTXREF_RE, region), _last_int(_XREFSTM_RE, region)):
+            if off is None or not (start <= off < end):
+                continue
+            written |= _objects_from_xref_at(raw, off, end)
+        return written
+    except Exception:
+        return set()
 
 
 def _values_equal(value_a: object, value_b: object) -> bool:
@@ -452,13 +587,19 @@ def classify_changed_object(
     except Exception:
         pass
 
-    # 7. Metadata: known metadata IDs, XMP streams, or /Type /Catalog//Pages
+    # 7. Metadata: known metadata IDs, XMP streams, cross-reference / object
+    #    streams (file infrastructure), or /Type /Catalog//Pages.
     if objgen in metadata_ids:
         return ObjectChangeClass.META, None, notes
     try:
         if isinstance(obj_b, pikepdf.Stream):
             sub = obj_b.get("/Subtype")
             if sub is not None and str(sub) == "/XML":
+                return ObjectChangeClass.META, None, notes
+            t = obj_b.get("/Type")
+            # /XRef = cross-reference stream, /ObjStm = object stream container.
+            # Both are structural plumbing, never document content.
+            if t is not None and str(t) in ("/XRef", "/ObjStm"):
                 return ObjectChangeClass.META, None, notes
     except Exception:
         pass
@@ -494,23 +635,53 @@ def classify_changed_object(
 def diff_objects(rev_a: Revision, rev_b: Revision) -> ObjectDiff:
     """Compare two consecutive Revision objects and return classified object changes.
 
-    Opens both with pikepdf, finds every indirect object whose serialised bytes
-    differ (or that is new in rev_b), then classifies each change. All errors
-    are captured as notes; the function never raises.
+    The changed-object SET is the set of objects whose cross-reference record
+    ``rev_b`` physically authored in its own appended byte range
+    (``rev_b.data[len(rev_a.data):]``) — see
+    :func:`objects_written_in_increment`. Each such object is then classified by
+    inspecting its live form in ``rev_b`` (and its prior form in ``rev_a`` for
+    form-field /V transitions). This avoids the enumeration-diff failure mode
+    where a truncated earlier revision under-enumerates and floods the result
+    with phantom "new" objects. All errors are captured as notes; never raises.
     """
     notes: list[str] = []
     changes: list[ObjectChange] = []
+
+    # rev_a must be a byte-prefix of rev_b for an honest "increment" to exist.
+    # In the real pipeline this always holds (both are truncations of the same
+    # raw file). If it does not (e.g. two independently-saved PDFs), there is no
+    # incremental relationship to read -- report and return nothing.
+    start = len(rev_a.data)
+    if rev_b.data[:start] != rev_a.data:
+        notes.append(
+            "revisions are not in an incremental (prefix) relationship; "
+            "no increment to diff"
+        )
+        return ObjectDiff(
+            from_revision=rev_a.index,
+            to_revision=rev_b.index,
+            changes=(),
+            notes=tuple(notes),
+        )
+
+    written = objects_written_in_increment(rev_b.data, start, len(rev_b.data))
+    if not written:
+        notes.append(
+            "increment authored no object records "
+            "(compatibility/hybrid xref or cross-reference rebuild); no content change"
+        )
+        return ObjectDiff(
+            from_revision=rev_a.index,
+            to_revision=rev_b.index,
+            changes=(),
+            notes=tuple(notes),
+        )
 
     try:
         with (
             pikepdf.open(BytesIO(rev_a.data)) as pdf_a,
             pikepdf.open(BytesIO(rev_b.data)) as pdf_b,
         ):
-            sig_a = _build_sig_table(pdf_a)
-            sig_b = _build_sig_table(pdf_b)
-            lookup_a = _build_obj_lookup(pdf_a)
-            lookup_b = _build_obj_lookup(pdf_b)
-
             page_ids = _collect_page_ids(pdf_b)
             content_ids = _collect_content_ids(pdf_b)
             annot_ids = _collect_annot_ids(pdf_b)
@@ -518,13 +689,21 @@ def diff_objects(rev_a: Revision, rev_b: Revision) -> ObjectDiff:
             metadata_ids = _collect_metadata_ids(pdf_b)
             word_pages = extract_words_per_page(rev_b.data)
 
-            for objgen, is_new in _changed_objgens(sig_a, sig_b):
-                obj_b = lookup_b.get(objgen)
+            for objgen in sorted(written):
+                try:
+                    obj_b = pdf_b.get_object(objgen)
+                except Exception as exc:
+                    notes.append(f"could not resolve object {objgen} in later revision: {exc}")
+                    continue
                 if obj_b is None:
-                    notes.append(f"object {objgen} missing from lookup; skipped")
+                    notes.append(f"object {objgen} written in increment but unresolved; skipped")
                     continue
 
-                obj_a = lookup_a.get(objgen) if not is_new else None
+                try:
+                    obj_a = pdf_a.get_object(objgen)
+                except Exception:
+                    obj_a = None
+                is_new = obj_a is None
 
                 try:
                     cls, page_idx, obj_notes = classify_changed_object(

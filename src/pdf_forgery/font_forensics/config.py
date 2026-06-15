@@ -89,6 +89,10 @@ class FontConfig:
     score_medium_subset_split: int = 55
     """MEDIUM score for an intra-line subset split off a high-value token."""
 
+    score_medium_whole_token_difference: int = 55
+    """MEDIUM ceiling for a uniformly-rendered amount/date token whose font
+    differs from line-local context. It can never independently reach HIGH."""
+
     score_medium_baseline_deviation: int = 45
     """MEDIUM score for a high-value baseline deviation with no line context."""
 
@@ -99,3 +103,6 @@ class FontConfig:
 
     score_low_default: int = 15
     """LOW score: multi-font document, only benign styling variation found."""
+
+    score_low_document_fallback: int = 20
+    """LOW score when only document-global baseline evidence is available."""

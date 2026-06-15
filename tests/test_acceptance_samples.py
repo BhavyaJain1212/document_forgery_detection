@@ -73,3 +73,35 @@ def test_microsoft_clean_revision_recovery_inconclusive(microsoft_clean_pdf):
     # Single-revision clean file -> revision recovery has nothing to compare.
     assert report.scoring.tier is ConfidenceTier.INCONCLUSIVE
     assert not any("fallback" in n for n in report.notes)
+
+
+def test_microsoft_hybrid_revision_recovery_not_medium(microsoft_hybrid_pdf):
+    """The hybrid-reference file's 184-byte compatibility xref append is a second
+    %%EOF that authors ZERO objects. Revision recovery must NOT raise a phantom
+    "content changed" MEDIUM off a truncated-revision enumeration diff; the
+    increment is recognized as a benign cross-reference rebuild (LOW), or
+    INCONCLUSIVE if a boundary cannot be reconstructed."""
+    report = rev_analyze(microsoft_hybrid_pdf)
+    assert report.ok is True
+    assert report.scoring.tier in (ConfidenceTier.LOW, ConfidenceTier.INCONCLUSIVE)
+    # No phantom CONTENT-change findings.
+    assert not any(f.object_classes for f in report.findings) or all(
+        "content stream changed but text layer is unchanged" not in f.summary
+        for f in report.findings
+    )
+
+
+def test_page4_microsoft_abn_is_not_a_font_high(page4_microsoft_pdf):
+    report = font_analyze(page4_microsoft_pdf)
+    assert report.ok is True
+    assert report.tier is ConfidenceTier.LOW
+    assert report.score == 15
+    assert report.findings == ()
+
+
+def test_sejda_tampered_font_behavior_unchanged(sejda_tampered_pdf):
+    report = font_analyze(sejda_tampered_pdf)
+    assert report.ok is True
+    assert report.tier is ConfidenceTier.LOW
+    assert report.score == 15
+    assert report.findings == ()

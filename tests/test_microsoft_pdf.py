@@ -1,13 +1,18 @@
-import shutil, fitz   # pip install pymupdf
+"""Regression for the clean Microsoft page-4 ABN false positive.
 
-src = "Microsoft-Sample-Invoice.pdf"
-dst = "Invoice-TAMPERED.pdf"
-shutil.copyfile(src, dst)              # never edit the original
+This replaces the old module-level PyMuPDF mutation scratch script. Tests must
+never create an incrementally edited PDF during collection or depend on the
+current working directory.
+"""
 
-doc = fitz.open(dst)
-page = doc[0]
-# add a fake amount so BOTH the content stream and the text layer change
-page.insert_text((100, 700), "Total: 50,000", fontsize=12, color=(0, 0, 0))
-doc.save(dst, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
-doc.close()
-print("wrote", dst)
+from pdf_forgery.core import ConfidenceTier
+from pdf_forgery.font_forensics import analyze_path
+
+
+def test_page4_abn_uniform_font_difference_is_clean(page4_microsoft_pdf):
+    report = analyze_path(page4_microsoft_pdf)
+
+    assert report.ok is True
+    assert report.tier is ConfidenceTier.LOW
+    assert report.score == 15
+    assert report.findings == ()

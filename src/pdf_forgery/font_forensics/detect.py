@@ -1,20 +1,9 @@
 """Font-inconsistency detectors over per-character glyph attribution.
 
-Two detectors, both gated on overlap with a high-value token (amount / date /
-ID) so we only escalate when a sensitive field is involved:
-
-1. **Subset-tag inconsistency** — within one text line, the same base face
-   appears with two different 6-letter subset tags (``ABCDEF+Arial`` vs
-   ``GHIJKL+Arial``). If the odd tag covers a high-value token -> HIGH
-   (re-embedding fingerprint); otherwise -> MEDIUM (intra-line prose switch).
-
-2. **Document-baseline deviation** — a high-value token whose font family
-   differs from the dominant family of its surrounding line context (font
-   substitution -> HIGH), or, when its line has no context to compare, from the
-   document baseline family (-> MEDIUM).
-
-High-value classification reuses ``revision_recovery.highvalue`` and the shared
-normaliser so the two stages identify amounts/dates/IDs identically.
+Evidence is evaluated in descending reliability: token-internal consistency,
+line-local context, page-local baseline, then document-global fallback. Only a
+font seam *inside* one token can independently produce HIGH. A uniformly-set
+token that merely differs from its surroundings is supporting evidence only.
 """
 
 from __future__ import annotations
@@ -30,6 +19,7 @@ from .fonts import (
     same_base_different_subset,
 )
 from .models import (
+    ClassificationStrength,
     ConfidenceTier,
     FontFinding,
     FontFindingKind,
@@ -37,9 +27,10 @@ from .models import (
     HighValueKind,
     TextLine,
     Token,
+    TokenCandidate,
 )
 from ..revision_recovery.extract.normalize import normalize
-from ..revision_recovery.highvalue import classify_token
+from ..revision_recovery.highvalue import TokenClassification, classify_token
 
 
 def detect_findings(
@@ -53,11 +44,23 @@ def detect_findings(
     cfg = config or FontConfig()
     lines = group_lines(glyphs, cfg)
     doc_baseline = dominant_font(glyphs)
+    page_baselines = {
+        page_index: dominant_font(g for g in glyphs if g.page_index == page_index)
+        for page_index in {g.page_index for g in glyphs}
+    }
     pervasive = _intra_token_mixing_is_pervasive(lines, cfg)
 
     findings: list[FontFinding] = []
     for line in lines:
-        findings.extend(_analyze_line(line, doc_baseline, pervasive, cfg))
+        findings.extend(
+            _analyze_line(
+                line,
+                page_baselines.get(line.page_index),
+                doc_baseline,
+                pervasive,
+                cfg,
+            )
+        )
     # Stable, reviewer-friendly order: by page, then by tier severity, then x.
     findings.sort(key=lambda f: (f.page_index, _TIER_RANK[f.tier], f.bbox[0]))
     return findings, lines
@@ -72,32 +75,69 @@ _TIER_RANK = {
 }
 
 
-def _hv_kind(token: Token) -> HighValueKind | None:
-    """High-value classification of a token's normalised text."""
+def _classification(token: Token, line: TextLine) -> TokenClassification | None:
+    """Structured classification using nearby tokens on the same line."""
     text = normalize(token.text)
     if not text:
         return None
-    return classify_token(text)
+    try:
+        index = next(i for i, candidate in enumerate(line.tokens) if candidate is token)
+    except StopIteration:
+        index = 0
+    nearby = [
+        candidate.text
+        for i, candidate in enumerate(line.tokens)
+        if candidate is not token and abs(i - index) <= 3
+    ]
+    return classify_token(text, context=nearby)
+
+
+def _hv_kind(token: Token, line: TextLine) -> HighValueKind | None:
+    classification = _classification(token, line)
+    return classification.high_value_kind if classification is not None else None
 
 
 def _analyze_line(
-    line: TextLine, doc_baseline: str | None, pervasive_mix: bool, cfg: FontConfig
+    line: TextLine,
+    page_baseline: str | None,
+    doc_baseline: str | None,
+    pervasive_mix: bool,
+    cfg: FontConfig,
 ) -> list[FontFinding]:
     non_space = [g for g in line.glyphs if not g.is_space]
     line_fonts = {g.fontname for g in non_space}
     findings: list[FontFinding] = []
 
     if len(line_fonts) <= 1:
-        # Uniform line: no intra-token mix possible (one font everywhere); only
-        # the cross-line baseline-deviation detector applies.
+        # Uniform line: no token-internal seam is possible. Prefer page-local
+        # comparison; use document-global only as a weak fallback.
         if cfg.enable_baseline_deviation and doc_baseline is not None:
-            findings.extend(_baseline_deviation(line, non_space, doc_baseline, cfg))
+            findings.extend(
+                _baseline_deviation(
+                    line, non_space, page_baseline, doc_baseline, cfg
+                )
+            )
         return findings
 
-    # Multi-font line: per-token line-context checks.
+    # Strongest evidence first: inspect every glyph within each token. Coarser
+    # line-context findings are skipped for tokens already covered here.
     flagged_token_ids: set[int] = set()
     flagged_glyph_ids: set[int] = set()
+    if cfg.enable_intra_token_mix:
+        intra_findings, intra_token_ids = _intra_token_mix_findings(
+            line, pervasive_mix, cfg
+        )
+        findings.extend(intra_findings)
+        flagged_token_ids |= intra_token_ids
+        for token in line.tokens:
+            if id(token) in intra_token_ids:
+                flagged_glyph_ids.update(id(g) for g in token.glyphs)
+
+    # Second: whole-token differences against line-local context. These are
+    # supporting evidence and are capped below HIGH.
     for token in line.tokens:
+        if id(token) in flagged_token_ids:
+            continue
         f = _analyze_token_in_line(line, token, cfg)
         if f is not None:
             findings.append(f)
@@ -112,21 +152,21 @@ def _analyze_line(
         findings.extend(subset_findings)
         flagged_token_ids |= subset_token_ids
 
-    # Minority glyph(s) INSIDE a single token (the masked single-glyph edit),
-    # skipping any token a coarser detector already flagged (dedup).
-    if cfg.enable_intra_token_mix:
-        findings.extend(
-            _intra_token_mix_findings(line, flagged_token_ids, pervasive_mix, cfg)
-        )
     return findings
 
 
 def _analyze_token_in_line(
     line: TextLine, token: Token, cfg: FontConfig
 ) -> FontFinding | None:
-    """HIGH check: does a high-value token's font break its line context?"""
-    hv = _hv_kind(token)
-    if hv is None:
+    """Supporting check: does a uniform token differ from line-local context?"""
+    classification = _classification(token, line)
+    if classification is None:
+        return None
+    hv = classification.high_value_kind
+    # Whole-token identifiers are commonly styled differently from their labels
+    # (ABN, account number, invoice number). Without an internal seam this is not
+    # useful tamper evidence.
+    if classification.primary is TokenCandidate.IDENTIFIER:
         return None
 
     token_glyphs = [g for g in token.glyphs if not g.is_space]
@@ -151,32 +191,45 @@ def _analyze_token_in_line(
     ctx_id = parse_font_identity(context_font)
 
     if cfg.enable_subset_split and same_base_different_subset(tok_id, ctx_id):
-        kind = FontFindingKind.HIGH_VALUE_SUBSET_SPLIT
+        kind = FontFindingKind.WHOLE_TOKEN_SUBSET_DIFFERENCE
         reason = (
-            f"High-value {hv.value} token {token.text!r} re-embedded as "
-            f"{token_font!r}, a different subset of {ctx_id.base!r} than its "
-            f"line ({context_font!r})"
+            f"Uniform token {token.text!r} uses {token_font!r}, a different "
+            f"subset of {ctx_id.base!r} than its line ({context_font!r}); "
+            "supporting evidence only because the token is internally consistent"
         )
     elif cfg.enable_substitution and is_substitution(tok_id, ctx_id):
-        kind = FontFindingKind.HIGH_VALUE_SUBSTITUTION
+        kind = FontFindingKind.WHOLE_TOKEN_FAMILY_DIFFERENCE
         reason = (
-            f"High-value {hv.value} token {token.text!r} set in {token_font!r}, "
-            f"a different font family than its line ({context_font!r})"
+            f"Uniform token {token.text!r} uses {token_font!r}, a different font "
+            f"family than its line ({context_font!r}); supporting evidence only "
+            "because no glyph-level seam exists inside the token"
         )
     else:
         # Same base no tag split, or a mere style variant (bold/italic) -> benign.
         return None
 
+    # Strong amount/date context can justify review, but weak or ambiguous
+    # numeric classification is capped at LOW.
+    tier = (
+        ConfidenceTier.MEDIUM
+        if hv in (HighValueKind.AMOUNT, HighValueKind.DATE)
+        and classification.strength is ClassificationStrength.STRONG
+        else ConfidenceTier.LOW
+    )
     return FontFinding(
         page_index=line.page_index,
         kind=kind,
-        tier=ConfidenceTier.HIGH,
+        tier=tier,
         token=token.text,
         token_font=token_font,
         context_font=context_font,
         bbox=token.bbox,
         reason=reason,
         high_value=hv,
+        classification_strength=classification.strength,
+        classification_candidates=classification.candidates,
+        classification_signals=classification.signals,
+        baseline_scope="line",
         conflicting_fonts=tuple(sorted({token_font, context_font})),
     )
 
@@ -349,22 +402,27 @@ def _intra_token_mixing_is_pervasive(
 
 def _intra_token_mix_findings(
     line: TextLine,
-    flagged_token_ids: set[int],
     pervasive_mix: bool,
     cfg: FontConfig,
-) -> list[FontFinding]:
-    """Emit findings for tokens with an in-token font seam (deduped)."""
+) -> tuple[list[FontFinding], set[int]]:
+    """Emit strongest-priority findings for tokens with an internal font seam."""
     line_font = dominant_font(line.glyphs) or ""
     findings: list[FontFinding] = []
+    flagged_token_ids: set[int] = set()
     for token in line.tokens:
-        if id(token) in flagged_token_ids:
-            continue  # a coarser detector already covered this token
         mix = _token_intra_mix(token, cfg)
         if mix is None:
             continue
 
-        hv = _hv_kind(token)
-        if hv is not None:
+        classification = _classification(token, line)
+        hv = classification.high_value_kind if classification is not None else None
+        confident_high_value = (
+            hv is not None
+            and classification is not None
+            and classification.strength
+            in (ClassificationStrength.STRONG, ClassificationStrength.MEDIUM)
+        )
+        if confident_high_value:
             tier = ConfidenceTier.HIGH
         elif cfg.flag_intra_token_mix_prose:
             tier = ConfidenceTier.MEDIUM
@@ -380,12 +438,20 @@ def _intra_token_mix_findings(
 
         seam = "subset" if mix.same_base_split else "family"
         guard = " (downgraded: intra-token mixing is pervasive in this document)" if pervasive_mix else ""
-        if hv is not None:
+        if confident_high_value:
             reason = (
                 f"High-value {hv.value} token {token.text!r}: glyph(s) "
                 f"{mix.suspicious_text!r} at index {list(mix.suspicious_indexes)} "
                 f"set in {mix.minority_font!r}, a different {seam} than the token's "
                 f"majority font {mix.token_font!r}{guard}"
+            )
+        elif classification is not None:
+            reason = (
+                f"Uncertain {classification.primary.value} token {token.text!r}: "
+                f"glyph(s) {mix.suspicious_text!r} at index "
+                f"{list(mix.suspicious_indexes)} use {mix.minority_font!r}, a "
+                f"different {seam} than majority font {mix.token_font!r}; "
+                f"classification strength {classification.strength.value}{guard}"
             )
         else:
             reason = (
@@ -406,6 +472,16 @@ def _intra_token_mix_findings(
                 bbox=token.bbox,
                 reason=reason,
                 high_value=hv,
+                classification_strength=(
+                    classification.strength if classification is not None else None
+                ),
+                classification_candidates=(
+                    classification.candidates if classification is not None else ()
+                ),
+                classification_signals=(
+                    classification.signals if classification is not None else ()
+                ),
+                baseline_scope="token",
                 conflicting_fonts=tuple(sorted({mix.token_font, mix.minority_font})),
                 minority_font=mix.minority_font,
                 suspicious_text=mix.suspicious_text,
@@ -413,44 +489,69 @@ def _intra_token_mix_findings(
                 suspicious_bboxes=mix.suspicious_bboxes,
             )
         )
-    return findings
+        flagged_token_ids.add(id(token))
+    return findings, flagged_token_ids
 
 
 def _baseline_deviation(
-    line: TextLine, non_space: list[Glyph], doc_baseline: str, cfg: FontConfig
+    line: TextLine,
+    non_space: list[Glyph],
+    page_baseline: str | None,
+    doc_baseline: str,
+    cfg: FontConfig,
 ) -> list[FontFinding]:
-    """MEDIUM: a high-value token on a uniform line deviates from doc baseline."""
+    """Compare a uniform line with page baseline, then weak document fallback."""
     line_font = dominant_font(non_space)
-    if line_font is None or line_font == doc_baseline:
+    if line_font is None:
         return []
-    base_id = parse_font_identity(doc_baseline)
+    baseline = page_baseline
+    scope = "page"
+    kind = FontFindingKind.PAGE_BASELINE_DEVIATION
+    tier = ConfidenceTier.MEDIUM
+    if baseline is None or baseline == line_font:
+        baseline = doc_baseline
+        scope = "document"
+        kind = FontFindingKind.DOCUMENT_BASELINE_DEVIATION
+        tier = ConfidenceTier.LOW
+    if baseline == line_font:
+        return []
+
+    base_id = parse_font_identity(baseline)
     line_id = parse_font_identity(line_font)
     if not is_substitution(line_id, base_id):
         return []  # same base / style variant -> normal styling
 
     findings: list[FontFinding] = []
     for token in line.tokens:
-        hv = _hv_kind(token)
-        if hv is None:
+        classification = _classification(token, line)
+        if classification is None:
             continue
-        if cfg.baseline_deviation_strong_only and hv is HighValueKind.ID_LIKE:
+        hv = classification.high_value_kind
+        if hv not in (HighValueKind.AMOUNT, HighValueKind.DATE):
             continue
+        finding_tier = tier
+        if classification.strength is not ClassificationStrength.STRONG:
+            finding_tier = ConfidenceTier.LOW
         findings.append(
             FontFinding(
                 page_index=line.page_index,
-                kind=FontFindingKind.HIGH_VALUE_BASELINE_DEVIATION,
-                tier=ConfidenceTier.MEDIUM,
+                kind=kind,
+                tier=finding_tier,
                 token=token.text,
                 token_font=line_font,
-                context_font=doc_baseline,
+                context_font=baseline,
                 bbox=token.bbox,
                 reason=(
-                    f"High-value {hv.value} token {token.text!r} set in "
-                    f"{line_font!r}, a different family than the document "
-                    f"baseline ({doc_baseline!r}); no line context to compare"
+                    f"Uniform {hv.value} token {token.text!r} uses {line_font!r}, "
+                    f"a different family than the {scope} baseline ({baseline!r}); "
+                    f"{scope}-baseline evidence cannot independently produce HIGH"
                 ),
                 high_value=hv,
-                conflicting_fonts=tuple(sorted({line_font, doc_baseline})),
+                classification_strength=classification.strength,
+                classification_candidates=classification.candidates,
+                classification_signals=classification.signals,
+                baseline_scope=scope,
+                conflicting_fonts=tuple(sorted({line_font, baseline})),
             )
         )
     return findings

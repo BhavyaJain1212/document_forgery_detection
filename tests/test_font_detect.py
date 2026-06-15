@@ -74,16 +74,16 @@ def test_dominant_font_majority_and_determinism():
 
 
 # --------------------------------------------------------------------------- #
-# HIGH: high-value token breaks line context
+# MEDIUM: whole-token differences are supporting evidence only
 # --------------------------------------------------------------------------- #
 
-def test_high_subset_split_on_amount():
+def test_whole_token_subset_split_on_amount_is_medium():
     g = line_glyphs([("Approved", SUB_A), ("amount:", SUB_A), ("50,000", SUB_B)])
     findings, _ = detect_findings(g)
     assert len(findings) == 1
     f = findings[0]
-    assert f.tier is ConfidenceTier.HIGH
-    assert f.kind is FontFindingKind.HIGH_VALUE_SUBSET_SPLIT
+    assert f.tier is ConfidenceTier.MEDIUM
+    assert f.kind is FontFindingKind.WHOLE_TOKEN_SUBSET_DIFFERENCE
     assert f.token == "50,000"
     assert f.high_value is HighValueKind.AMOUNT
     assert f.token_font == SUB_B
@@ -93,15 +93,15 @@ def test_high_subset_split_on_amount():
     assert f.bbox[0] > 72.0
 
 
-def test_high_substitution_on_amount():
+def test_whole_token_substitution_on_amount_is_medium():
     g = line_glyphs([("Approved", "Helvetica"), ("amount:", "Helvetica"), ("50,000", "Times-Roman")])
     findings, _ = detect_findings(g)
     assert len(findings) == 1
-    assert findings[0].tier is ConfidenceTier.HIGH
-    assert findings[0].kind is FontFindingKind.HIGH_VALUE_SUBSTITUTION
+    assert findings[0].tier is ConfidenceTier.MEDIUM
+    assert findings[0].kind is FontFindingKind.WHOLE_TOKEN_FAMILY_DIFFERENCE
 
 
-def test_high_on_date_token():
+def test_whole_token_date_difference_is_medium():
     # Short, non-ID context words so the only anomaly is the date in SUB_B; the
     # SUB_A context must dominate (>= the date's glyph count) to be the baseline.
     g = line_glyphs(
@@ -110,7 +110,7 @@ def test_high_on_date_token():
     )
     findings, _ = detect_findings(g)
     assert len(findings) == 1
-    assert findings[0].tier is ConfidenceTier.HIGH
+    assert findings[0].tier is ConfidenceTier.MEDIUM
     assert findings[0].token == "12/05/2024"
     assert findings[0].high_value is HighValueKind.DATE
 
@@ -131,6 +131,22 @@ def test_insufficient_context_not_flagged():
     g = line_glyphs([("50,000", "Times-Roman"), ("ok", "Helvetica")])
     findings, _ = detect_findings(g)
     assert findings == []
+
+
+def test_abn_uniform_font_difference_not_flagged():
+    g = line_glyphs(
+        [("ABN:", "ArialMT"), ("59547297213", "SegoeUI"), ("4/13", "ArialMT")]
+    )
+    findings, _ = detect_findings(g)
+    assert findings == []
+
+
+def test_ambiguous_bare_integer_whole_token_difference_cannot_reach_high():
+    g = line_glyphs(
+        [("Reference", "Helvetica"), ("123456", "Times-Roman")]
+    )
+    findings, _ = detect_findings(g)
+    assert all(f.tier is not ConfidenceTier.HIGH for f in findings)
 
 
 # --------------------------------------------------------------------------- #
@@ -160,7 +176,7 @@ def test_medium_baseline_deviation_uniform_line():
     assert len(findings) == 1
     f = findings[0]
     assert f.tier is ConfidenceTier.MEDIUM
-    assert f.kind is FontFindingKind.HIGH_VALUE_BASELINE_DEVIATION
+    assert f.kind is FontFindingKind.PAGE_BASELINE_DEVIATION
     assert f.high_value is HighValueKind.AMOUNT
 
 
@@ -192,10 +208,10 @@ def test_score_low_multifont_no_findings():
     assert score == FontConfig().score_low_default
 
 
-def test_score_high_amount_beats_medium():
+def test_score_whole_token_amount_is_capped_at_medium():
     g = line_glyphs([("Approved", SUB_A), ("amount:", SUB_A), ("50,000", SUB_B)])
     findings, _ = detect_findings(g)
     tier, score, reasons = score_findings(findings, 2, 50)
-    assert tier is ConfidenceTier.HIGH
-    assert score == FontConfig().score_high_amount_date
-    assert any("high-value" in r for r in reasons)
+    assert tier is ConfidenceTier.MEDIUM
+    assert score == FontConfig().score_medium_whole_token_difference
+    assert any("lacks independent HIGH" in r for r in reasons)

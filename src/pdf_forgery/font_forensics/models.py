@@ -13,6 +13,7 @@ from enum import Enum
 
 from ..core.glyphs import Glyph, TextLine, Token
 from ..core.types import ConfidenceTier
+from ..revision_recovery.highvalue import ClassificationStrength, TokenCandidate
 from ..revision_recovery.models import HighValueKind
 
 # ``Glyph`` / ``Token`` / ``TextLine`` are the shared, stage-agnostic glyph
@@ -29,23 +30,28 @@ __all__ = [
     "FontReport",
     "ConfidenceTier",
     "HighValueKind",
+    "ClassificationStrength",
+    "TokenCandidate",
 ]
 
 
 class FontFindingKind(str, Enum):
     """Why a font finding was raised (drives its tier)."""
 
-    HIGH_VALUE_SUBSET_SPLIT = "high_value_subset_split"
-    """A high-value token carries a different subset tag of the SAME base face
-    than the rest of its line — the re-embedding fingerprint. -> HIGH."""
+    WHOLE_TOKEN_SUBSET_DIFFERENCE = "whole_token_subset_difference"
+    """A uniformly-rendered token uses another subset of the line's base face.
+    Supporting evidence only; never independently HIGH."""
 
-    HIGH_VALUE_SUBSTITUTION = "high_value_substitution"
-    """A high-value token is set in a different font FAMILY than its line
-    context (not a mere style variant) — font substitution. -> HIGH."""
+    WHOLE_TOKEN_FAMILY_DIFFERENCE = "whole_token_family_difference"
+    """A uniformly-rendered token uses a different family than line context.
+    Supporting evidence only; never independently HIGH."""
 
-    HIGH_VALUE_BASELINE_DEVIATION = "high_value_baseline_deviation"
-    """A high-value token on an otherwise-uniform line is set in a different
-    family than the document baseline (no line context to compare). -> MEDIUM."""
+    PAGE_BASELINE_DEVIATION = "page_baseline_deviation"
+    """A uniform token/line differs from the page-local baseline. -> MEDIUM max."""
+
+    DOCUMENT_BASELINE_DEVIATION = "document_baseline_deviation"
+    """A uniform token/line differs only from the document-global fallback.
+    Weak evidence. -> LOW."""
 
     INTRA_LINE_SUBSET_SPLIT = "intra_line_subset_split"
     """A same-base / different-subset-tag split inside a line, NOT overlapping a
@@ -56,7 +62,14 @@ class FontFindingKind(str, Enum):
     family, or the same base face with a different subset tag, than the token's
     majority font — the single-glyph-insertion fingerprint (e.g. a '0' typed
     into an amount in a different font). -> HIGH for amount/date/ID tokens,
-    MEDIUM for prose tokens (downgraded when intra-token mixing is pervasive)."""
+    MEDIUM for prose/uncertain numeric tokens (downgraded when mixing is
+    pervasive)."""
+
+    # Backward-compatible names for callers that imported the original enum
+    # members. Their values now reflect the corrected whole-token semantics.
+    HIGH_VALUE_SUBSET_SPLIT = WHOLE_TOKEN_SUBSET_DIFFERENCE
+    HIGH_VALUE_SUBSTITUTION = WHOLE_TOKEN_FAMILY_DIFFERENCE
+    HIGH_VALUE_BASELINE_DEVIATION = PAGE_BASELINE_DEVIATION
 
 
 @dataclass(frozen=True)
@@ -74,6 +87,11 @@ class FontFinding:
     bbox: tuple[float, float, float, float]
     reason: str
     high_value: HighValueKind | None = None
+    classification_strength: ClassificationStrength | None = None
+    classification_candidates: tuple[TokenCandidate, ...] = ()
+    classification_signals: tuple[str, ...] = ()
+    baseline_scope: str = "token"
+    """Evidence scope: token, line, page, or document."""
     conflicting_fonts: tuple[str, ...] = ()
     """All distinct fonts involved in the conflict, sorted for determinism."""
 

@@ -6,10 +6,9 @@ recovery returns INCONCLUSIVE on them — font forensics is the stage that must
 tell them apart:
 
   font_edited_subset.pdf  (KNOWN-POSITIVE -> HIGH)
-      One line reads ``Approved claim amount: 50,000`` where the label is set in
-      one embedded subset (``ABCDEF+Helvetica``) and the amount in a DIFFERENT
-      subset of the SAME base face (``GHIJKL+Helvetica``) — the re-embedding
-      fingerprint of an amount that was retyped and re-embedded before flatten.
+      One line reads ``Approved claim amount: 50,000`` where a single ``0``
+      inside the amount uses ``GHIJKL+Helvetica`` while the other amount glyphs
+      use ``ABCDEF+Helvetica`` — the intra-token re-embedding fingerprint.
 
   font_multifont_invoice.pdf  (KNOWN-NEGATIVE -> LOW)
       A genuine multi-font invoice: bold headers (``Helvetica-Bold``) over body
@@ -100,14 +99,14 @@ def _finish(pdf: Pdf, page: object) -> bytes:
 
 
 def build_forged() -> bytes:
-    """Known-positive: amount re-embedded under a different subset of Helvetica."""
+    """Known-positive: one amount glyph uses a foreign Helvetica subset."""
     pdf = Pdf.new()
     # F1 = label subset, F2 = amount subset (same base, different tag).
     content = (
         b"BT /F1 14 Tf 72 720 Td (Care Health Insurance - Claim Settlement) Tj\n"
         b"0 -28 Td (Policy No: CHI1234567) Tj\n"
-        b"0 -28 Td (Approved claim amount: ) Tj "
-        b"/F2 14 Tf (" + AMOUNT.encode("latin-1") + b") Tj ET"
+        b"0 -28 Td (Approved claim amount: 50,) Tj "
+        b"/F2 14 Tf (0) Tj /F1 14 Tf (00) Tj ET"
     )
     fonts = {"F1": _subset_font(pdf, LABEL_SUBSET), "F2": _subset_font(pdf, AMOUNT_SUBSET)}
     return _finish(pdf, _page(pdf, content, fonts))
@@ -147,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {name:>24}: {path}  ({path.stat().st_size} bytes)")
     print(
         f"\nknown-positive: {paths['font_edited_subset'].name} "
-        f"(amount {AMOUNT!r} re-embedded as {AMOUNT_SUBSET} vs line {LABEL_SUBSET})\n"
+        f"(one glyph inside amount {AMOUNT!r} uses {AMOUNT_SUBSET} vs majority {LABEL_SUBSET})\n"
         f"known-negative: {paths['font_multifont_invoice'].name} "
         f"(genuine bold-header multi-font invoice)"
     )
