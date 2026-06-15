@@ -16,8 +16,20 @@ Implemented:
     - report: render AnalysisReport → JSON (machine) and a human summary.
 """
 
-from .analyze import analyze_bytes, analyze_path
+from .adapter import (
+    report_to_stage_result,
+    render_stage_json,
+    render_stage_summary,
+    stage_result_to_report,
+)
+from .analyze import (
+    analyze_bytes,
+    analyze_bytes_as_stage,
+    analyze_path,
+    analyze_path_as_stage,
+)
 from .config import Config
+from .stage import RevisionRecoveryStage
 from .detect import detect, detect_from_path
 from .diff.objectdiff import classify_changed_object, diff_objects
 from .diff.textdiff import diff_normalized_pages, diff_text
@@ -70,6 +82,14 @@ __all__ = [
     # orchestration
     "analyze_path",
     "analyze_bytes",
+    "analyze_path_as_stage",
+    "analyze_bytes_as_stage",
+    # stage / core-schema adapter
+    "RevisionRecoveryStage",
+    "report_to_stage_result",
+    "stage_result_to_report",
+    "render_stage_json",
+    "render_stage_summary",
     # reporting
     "render_json",
     "render_summary",

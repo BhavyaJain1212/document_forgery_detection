@@ -345,28 +345,11 @@ class ObjectDiff:
 # ---------------------------------------------------------------------------
 
 
-class ConfidenceTier(str, Enum):
-    """Advisory confidence tier produced by the scoring rule tree.
-
-    ``str`` mixin lets values serialize to plain JSON without extra work.
-    A human reviewer makes the final call — the tier is never a binary verdict.
-    """
-
-    INCONCLUSIVE = "inconclusive"
-    """Only one revision found.  Route to later stages (font / OCR)."""
-
-    LOW = "low"
-    """Multiple revisions, changes confined to SIGNATURE / META / MARKUP /
-    FORM_FILL (benign).  Score band: 0-30."""
-
-    MEDIUM = "medium"
-    """Suspicious but not conclusive: CONTENT changed without a text diff,
-    OVERLAY / FIELD_EDIT present, or a revision could not be reconstructed.
-    Score band: 30-70.  OCR cross-check recommended."""
-
-    HIGH = "high"
-    """Substantive text change in a CONTENT object — strong evidence of
-    direct text editing.  Score band: 70-100."""
+# ``ConfidenceTier`` now lives in the stage-agnostic core so every detection
+# stage shares one definition (INCONCLUSIVE / LOW / MEDIUM / HIGH with identical
+# string values). It is re-exported here so existing
+# ``revision_recovery.models.ConfidenceTier`` imports keep working unchanged.
+from ..core.types import ConfidenceTier  # noqa: E402  (re-export)
 
 
 @dataclass(frozen=True)

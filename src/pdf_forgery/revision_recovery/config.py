@@ -141,3 +141,22 @@ class Config:
     first-time use (e.g. a user completing a form), not a forgery signal.
     Set True for stricter environments where any field modification is suspicious.
     """
+
+    # ------------------------------------------------------------------ #
+    # Glyph-based fallback text extraction                                #
+    # ------------------------------------------------------------------ #
+
+    enable_glyph_fallback: bool = True
+    """When True, if a revision pair's PRIMARY text extraction looks suspiciously
+    incomplete (and found no substantive change), retry the comparison using the
+    shared per-character glyph extractor. Files where primary extraction already
+    works are never affected."""
+
+    fallback_min_glyph_chars: int = 20
+    """Minimum non-space characters the glyph path must recover before the
+    incomplete-extraction heuristic can fire (avoids triggering on near-empty
+    pages)."""
+
+    fallback_incomplete_ratio: float = 0.5
+    """Primary extraction is deemed incomplete when its non-space character count
+    is below this fraction of the glyph path's count for the same revision."""

@@ -1,8 +1,18 @@
-"""PDF document-forgery detection — Stage 1 (revision recovery).
+"""PDF document-forgery detection.
 
-This package is scaffolding only. The detection modules (revisions, extract,
-diff, scoring, report, cli) are proposed in CLAUDE.md and not yet implemented;
-they will be added after the module layout is approved.
+A multi-stage pipeline. Each detection stage is an independent
+:class:`~pdf_forgery.core.stage.Stage` that consumes raw PDF bytes plus a shared
+:class:`~pdf_forgery.core.context.AnalysisContext` and emits a
+:class:`~pdf_forgery.core.types.StageResult`. The orchestrator in
+:mod:`pdf_forgery.pipeline` runs a list of stages and collects their results
+(fusion into one combined report comes later).
+
+Stages implemented:
+    - ``revision_recovery`` — Stage 1: detect direct-text-editing forgery by
+      recovering the historical revisions an incremental update leaves in a PDF.
+
+Planned siblings (plug in at the pipeline level): ``font_fingerprint``,
+``ocr_crosscheck``.
 """
 
 __version__ = "0.1.0"

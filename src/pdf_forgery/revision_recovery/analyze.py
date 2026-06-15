@@ -16,10 +16,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..core.types import StageResult
+from .adapter import report_to_stage_result
 from .config import Config
 from .detect import detect
 from .diff.objectdiff import diff_objects
-from .diff.textdiff import diff_text
+from .diff.textdiff import diff_normalized_pages, diff_text
+from .extract.glyph_text import glyph_page_texts, looks_incomplete
+from .extract.normalize import normalize
+from .extract.text import extract_text_per_page
 from .models import (
     AnalysisReport,
     Finding,
@@ -172,6 +177,71 @@ def _build_findings(
 
 
 # ---------------------------------------------------------------------------
+# Glyph-based fallback text diff (FIX 2)
+# ---------------------------------------------------------------------------
+
+def _diff_text_with_fallback(
+    rev_a: Revision,
+    rev_b: Revision,
+    cfg: Config,
+    notes: list[str],
+) -> TextChange:
+    """Primary text diff, with a glyph-based fallback for incomplete extraction.
+
+    The primary container-level extractor stays authoritative. Only when it
+    found NO substantive change *and* its output looks suspiciously incomplete
+    for a revision (far fewer characters, or missing high-value tokens, than the
+    shared glyph extractor recovers) do we re-diff the revision pair from grouped
+    glyphs. The fallback result REPLACES the primary one only when it touches a
+    high-value token (amount/date/ID) — escalating the eventual MEDIUM to HIGH;
+    a non-high-value prose-only fallback diff is left advisory (primary kept), so
+    files where primary extraction already works are never affected.
+    """
+    primary = diff_text(rev_a, rev_b, cfg)
+    if not cfg.enable_glyph_fallback:
+        return primary
+    if primary.is_substantive:
+        return primary  # primary already works -> never override (regression guard)
+
+    norm_a = [normalize(p, cfg) for p in extract_text_per_page(rev_a.data)]
+    norm_b = [normalize(p, cfg) for p in extract_text_per_page(rev_b.data)]
+    if not (
+        looks_incomplete(norm_a, rev_a.data, cfg)
+        or looks_incomplete(norm_b, rev_b.data, cfg)
+    ):
+        return primary
+
+    glyph_a = [normalize(p, cfg) for p in glyph_page_texts(rev_a.data)]
+    glyph_b = [normalize(p, cfg) for p in glyph_page_texts(rev_b.data)]
+    fb = diff_normalized_pages(glyph_a, glyph_b, rev_a.index, rev_b.index)
+
+    if fb.is_substantive and fb.has_high_value_change:
+        note = (
+            f"primary text extraction was incomplete for revisions "
+            f"{rev_a.index}->{rev_b.index}; glyph-based fallback recovered a "
+            f"high-value text change the primary extractor missed"
+        )
+        # Carried on the returned TextChange's notes (merged by analyze_bytes);
+        # not also appended to `notes` here, to avoid a duplicate entry.
+        return TextChange(
+            from_revision=fb.from_revision,
+            to_revision=fb.to_revision,
+            page_diffs=fb.page_diffs,
+            is_substantive=fb.is_substantive,
+            has_high_value_change=fb.has_high_value_change,
+            notes=fb.notes + (note,),
+        )
+
+    if fb.is_substantive:
+        # Fallback saw only prose changes: stay advisory, keep the primary result.
+        notes.append(
+            f"glyph-based fallback found a non-high-value text change for "
+            f"revisions {rev_a.index}->{rev_b.index}; left advisory (not escalated)"
+        )
+    return primary
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -193,14 +263,15 @@ def analyze_bytes(
 
     text_changes: list[TextChange] = []
     object_diffs: list[ObjectDiff] = []
+    fallback_notes: list[str] = []
     for rev_a, rev_b in zip(revisions, revisions[1:]):
-        text_changes.append(diff_text(rev_a, rev_b, cfg))
+        text_changes.append(_diff_text_with_fallback(rev_a, rev_b, cfg, fallback_notes))
         object_diffs.append(diff_objects(rev_a, rev_b))
 
     scoring = score(text_changes, object_diffs, recon, cfg)
     findings = _build_findings(text_changes, object_diffs)
 
-    notes = detection.notes + recon.notes
+    notes = detection.notes + recon.notes + tuple(fallback_notes)
     for tc in text_changes:
         notes += tc.notes
     for od in object_diffs:
@@ -242,6 +313,35 @@ def analyze_path(
         return _failed(str(path), f"could not read file: {exc}")
 
     return analyze_bytes(raw, str(path), config)
+
+
+# ---------------------------------------------------------------------------
+# Stage-schema entry points (core.types.StageResult)
+# ---------------------------------------------------------------------------
+
+def analyze_bytes_as_stage(
+    raw: bytes,
+    path: str = "<bytes>",
+    config: Config | None = None,
+) -> StageResult:
+    """Run the full Stage 1 pipeline and return a core :class:`StageResult`.
+
+    Identical detection / scoring to :func:`analyze_bytes`; the rich
+    :class:`AnalysisReport` is mapped onto the shared stage schema (and preserved
+    as the result's ``payload`` for the original renderers).
+    """
+    return report_to_stage_result(analyze_bytes(raw, path, config))
+
+
+def analyze_path_as_stage(
+    path: str | Path,
+    config: Config | None = None,
+) -> StageResult:
+    """Read a PDF (read-only) and return a core :class:`StageResult`.
+
+    Stage-schema counterpart of :func:`analyze_path`; never raises.
+    """
+    return report_to_stage_result(analyze_path(path, config))
 
 
 def _failed(path: str, error: str) -> AnalysisReport:

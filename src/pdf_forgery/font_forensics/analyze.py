@@ -1,0 +1,139 @@
+"""Orchestration: glyph extraction -> detection -> scoring -> FontReport.
+
+``analyze_bytes`` / ``analyze_path`` return the rich :class:`FontReport`;
+``analyze_bytes_as_stage`` / ``analyze_path_as_stage`` return a core
+:class:`~pdf_forgery.core.types.StageResult` via the adapter. None of these ever
+raise — a processing failure becomes an ``ok=False`` report.
+
+When a shared :class:`~pdf_forgery.core.context.AnalysisContext` is available the
+stage consumes its cached ``page_layouts`` so the file is parsed once across all
+stages; otherwise it extracts glyphs straight from the bytes.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from ..core.context import AnalysisContext
+from ..core.types import StageResult
+from .config import FontConfig
+from .detect import detect_findings
+from .extract import distinct_fonts, glyphs_from_bytes, glyphs_from_layouts
+from .models import ConfidenceTier, FontReport, Glyph
+from .scoring import score_findings
+
+
+def analyze_bytes(
+    raw: bytes,
+    path: str = "<bytes>",
+    config: FontConfig | None = None,
+    *,
+    ctx: AnalysisContext | None = None,
+) -> FontReport:
+    """Analyse PDF *raw* bytes and return a :class:`FontReport` (never raises)."""
+    cfg = config or FontConfig()
+    notes: list[str] = []
+
+    try:
+        glyphs, page_count = _extract(raw, ctx, notes)
+    except Exception as exc:  # defensive: extraction must never abort the stage
+        return FontReport(
+            path=path,
+            ok=False,
+            tier=ConfidenceTier.INCONCLUSIVE,
+            score=None,
+            error=f"font extraction failed: {exc}",
+            raw_size=len(raw),
+        )
+
+    fonts = distinct_fonts(glyphs)
+    if not glyphs:
+        notes.append("no extractable text glyphs (image-only, empty, or encrypted)")
+
+    findings, lines = detect_findings(glyphs, cfg)
+    comparable = sum(1 for g in glyphs if not g.is_space)
+    tier, score, reasons = score_findings(findings, len(fonts), comparable, cfg)
+
+    return FontReport(
+        path=path,
+        ok=True,
+        tier=tier,
+        score=score,
+        page_count=page_count,
+        distinct_fonts=fonts,
+        findings=tuple(findings),
+        reasons=tuple(reasons),
+        notes=tuple(notes),
+        error=None,
+        raw_size=len(raw),
+        _lines=tuple(lines),
+    )
+
+
+def analyze_path(path: str | Path, config: FontConfig | None = None) -> FontReport:
+    """Read a PDF file (read-only) and analyse it; missing/dir -> ok=False."""
+    p = Path(path)
+    try:
+        if not p.exists():
+            return _failed_report(str(path), "file not found")
+        if p.is_dir():
+            return _failed_report(str(path), "path is a directory, not a PDF file")
+        raw = p.read_bytes()
+    except OSError as exc:
+        return _failed_report(str(path), f"could not read file: {exc}")
+    return analyze_bytes(raw, str(path), config)
+
+
+# ---------------------------------------------------------------------------
+# Stage-schema variants
+# ---------------------------------------------------------------------------
+
+def analyze_bytes_as_stage(
+    raw: bytes,
+    path: str = "<bytes>",
+    config: FontConfig | None = None,
+    *,
+    ctx: AnalysisContext | None = None,
+) -> StageResult:
+    """Analyse bytes and return a core :class:`StageResult`."""
+    from .adapter import report_to_stage_result
+
+    return report_to_stage_result(analyze_bytes(raw, path, config, ctx=ctx))
+
+
+def analyze_path_as_stage(
+    path: str | Path, config: FontConfig | None = None
+) -> StageResult:
+    """Analyse a file and return a core :class:`StageResult`."""
+    from .adapter import report_to_stage_result
+
+    return report_to_stage_result(analyze_path(path, config))
+
+
+# ---------------------------------------------------------------------------
+# Internals
+# ---------------------------------------------------------------------------
+
+def _extract(
+    raw: bytes, ctx: AnalysisContext | None, notes: list[str]
+) -> tuple[list[Glyph], int]:
+    """Extract glyphs, preferring the shared context's cached layouts."""
+    if ctx is not None:
+        layouts = ctx.page_layouts
+        if layouts:
+            return glyphs_from_layouts(layouts), len(layouts)
+        # ctx present but no layouts (e.g. encrypted): fall through to bytes.
+    glyphs = glyphs_from_bytes(raw)
+    page_count = 1 + max((g.page_index for g in glyphs), default=-1)
+    return glyphs, page_count
+
+
+def _failed_report(path: str, error: str) -> FontReport:
+    return FontReport(
+        path=path,
+        ok=False,
+        tier=ConfidenceTier.INCONCLUSIVE,
+        score=None,
+        error=error,
+        notes=(error,),
+    )
