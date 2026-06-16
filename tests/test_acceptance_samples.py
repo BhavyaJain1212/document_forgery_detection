@@ -8,9 +8,13 @@ samples live (untracked) in ``test_pdf's/``; the fixtures skip when absent.
 
 from __future__ import annotations
 
+import pytest
+
 from pdf_forgery.core import ConfidenceTier
 from pdf_forgery.font_forensics import analyze_path as font_analyze
 from pdf_forgery.font_forensics.models import FontFindingKind, HighValueKind
+from pdf_forgery.ocr_crosscheck.analyze import analyze_path as ocr_analyze
+from pdf_forgery.ocr_crosscheck.ocr_engine import PaddleOCREngine
 from pdf_forgery.revision_recovery import analyze_path as rev_analyze
 
 
@@ -105,3 +109,46 @@ def test_sejda_tampered_font_behavior_unchanged(sejda_tampered_pdf):
     assert report.tier is ConfidenceTier.LOW
     assert report.score == 15
     assert report.findings == ()
+
+
+# --------------------------------------------------------------------------- #
+# OCR cross-check precision baseline (see docs/STAGE3_OCR_FALSE_POSITIVE_FIX.md)
+# --------------------------------------------------------------------------- #
+
+def test_page4_microsoft_ocr_crosscheck_not_high(page4_microsoft_pdf):
+    """Real-engine regression for the OCR false-positive bug.
+
+    Before the fix, PaddleOCR's default document-unwarping warped every OCR box
+    out of the rendered raster's coordinate space, and near-universal "ID-like"
+    classification turned routine OCR noise into zero-tolerance high-value
+    divergence — this clean invoice scored HIGH 95. With doc-unwarping/
+    orientation disabled and orphan/ID scoring corroboration-gated, it must not
+    score HIGH."""
+    engine = PaddleOCREngine()
+    if not engine.is_available():
+        pytest.skip("PaddleOCR not installed/available in this environment")
+    report = ocr_analyze(str(page4_microsoft_pdf), engine=engine)
+    assert report.ok is True
+    assert report.result is not None
+    assert report.result.tier in (ConfidenceTier.LOW, ConfidenceTier.INCONCLUSIVE)
+
+
+def test_microsoft_long_invoice_ocr_crosscheck_not_high(microsoft_hybrid_pdf):
+    """Real-engine regression for the long-PDF OCR false positive
+    (docs/STAGE3_LONG_PDF_FALSE_POSITIVE.md).
+
+    Before the fix, this clean 13-page invoice scored HIGH 95: a bare digit
+    (a reservation term, e.g. "3") inside Azure SKU lines elevated the whole
+    line to AMOUNT's zero tolerance, so an unrelated underscore-vs-space OCR
+    glyph drop tripped 3 false AMOUNT MISMATCHes; and a "Microsoft Azure"
+    header recognized by OCR but not the embedded layer on every page
+    accumulated an absolute mass that doesn't scale with document length.
+    Acceptance criteria (per the design doc): not HIGH and not MEDIUM — LOW
+    or INCONCLUSIVE."""
+    engine = PaddleOCREngine()
+    if not engine.is_available():
+        pytest.skip("PaddleOCR not installed/available in this environment")
+    report = ocr_analyze(str(microsoft_hybrid_pdf), engine=engine)
+    assert report.ok is True
+    assert report.result is not None
+    assert report.result.tier in (ConfidenceTier.LOW, ConfidenceTier.INCONCLUSIVE)

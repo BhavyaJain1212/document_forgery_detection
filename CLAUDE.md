@@ -281,6 +281,8 @@ pair: `extract.text` + `extract.normalize` → `diff.textdiff` and
 > - `src/pdf_forgery/font_forensics/CLAUDE.md` — Stage 2 + mixed-font bug-fix
 > - `src/pdf_forgery/invoice_arithmetic/CLAUDE.md` — invoice stage + calibration
 > - `src/pdf_forgery/provenance_metadata/CLAUDE.md` — provenance stage
+> - `src/pdf_forgery/ocr_crosscheck/CLAUDE.md` — Stage 3 OCR↔embedded cross-check
+>   (DESIGN + STUBS only so far; contract in `docs/STAGE3_DESIGN.md`)
 
 ### Where things stand
 All stages are implemented and green. Pipeline:
