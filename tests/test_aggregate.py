@@ -1,0 +1,449 @@
+"""Stage 6.1 — aggregate() + PHI-scrub boundary + advisory (CPU-only logic)."""
+
+from __future__ import annotations
+
+import dataclasses
+from types import SimpleNamespace
+
+import pytest
+
+from pdf_forgery.aggregate import (
+    AdvisoryFinding,
+    AdvisoryInput,
+    AdvisoryStage,
+    AggregateConfig,
+    FindingGroup,
+    GroupExplanation,
+    StubAdvisoryEngine,
+    aggregate,
+    assert_advisory_safe,
+    generate_advisory,
+    to_advisory_input,
+)
+from pdf_forgery.aggregate.models import BBox
+from pdf_forgery.core.types import ConfidenceTier, Finding, StageResult
+from pdf_forgery.font_forensics.models import FontFindingKind
+from pdf_forgery.fusion import fuse
+from pdf_forgery.invoice_arithmetic.models import RelationshipKind
+from pdf_forgery.ocr_crosscheck.models import DivergenceType
+from pdf_forgery.provenance_metadata.models import ProvenanceFindingKind
+from pdf_forgery.revision_recovery.models import ObjectChangeClass
+
+REV = "revision_recovery"
+FONT = "font_forensics"
+ARITH = "invoice_arithmetic"
+PROV = "provenance_metadata"
+OCR = "ocr_crosscheck"
+
+
+def _finding(stage: str, tier=ConfidenceTier.HIGH, **kw) -> Finding:
+    defaults = dict(stage=stage, tier=tier, reason="x", page=0)
+    defaults.update(kw)
+    return Finding(**defaults)
+
+
+def _stage_result(stage, tier, score=None, findings=(), payload=None, ok=True, error=None):
+    return StageResult(
+        stage=stage, tier=tier, score=score, findings=tuple(findings),
+        summary="", reasons=(), notes=(), ok=ok, error=error, payload=payload,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# aggregate() roll-up matches fusion.fuse()
+# --------------------------------------------------------------------------- #
+
+def test_aggregate_headline_matches_fuse():
+    results = [
+        _stage_result(REV, ConfidenceTier.HIGH, 95, findings=[_finding(REV)]),
+        _stage_result(FONT, ConfidenceTier.LOW, 15),
+        _stage_result(PROV, ConfidenceTier.LOW, 0),
+    ]
+    fused = fuse(results)
+    agg = aggregate(results)
+    assert agg.tier is fused.tier
+    assert agg.score == fused.score
+    assert agg.reasons == fused.reasons
+    assert agg.contributing_stages == fused.contributing_stages
+    assert agg.notes == fused.notes
+    assert agg.stage_results == tuple(results)
+
+
+def test_aggregate_no_results_is_inconclusive():
+    agg = aggregate([])
+    assert agg.tier is ConfidenceTier.INCONCLUSIVE
+    assert agg.score is None
+    assert agg.findings == ()
+
+
+def test_aggregate_failed_stage_noted_via_fusion():
+    results = [
+        _stage_result(ARITH, ConfidenceTier.MEDIUM, 65, findings=[_finding(ARITH, ConfidenceTier.MEDIUM)]),
+        _stage_result(FONT, ConfidenceTier.INCONCLUSIVE, ok=False, error="boom"),
+    ]
+    agg = aggregate(results)
+    assert any("font_forensics" in n and "boom" in n for n in agg.notes)
+
+
+# --------------------------------------------------------------------------- #
+# Finding flattening: stable ids, tier carried, score is None (no per-finding
+# numeric score exists on the core Finding), bbox is None this slice.
+# --------------------------------------------------------------------------- #
+
+def test_flatten_assigns_stable_ids_and_carries_tier():
+    findings = [_finding(REV, ConfidenceTier.HIGH), _finding(REV, ConfidenceTier.MEDIUM)]
+    results = [_stage_result(REV, ConfidenceTier.HIGH, 90, findings=findings)]
+    agg = aggregate(results)
+    assert [f.finding_id for f in agg.findings] == ["revision_recovery-0", "revision_recovery-1"]
+    assert agg.findings[0].tier is ConfidenceTier.HIGH
+    assert agg.findings[1].tier is ConfidenceTier.MEDIUM
+    assert all(f.score is None for f in agg.findings)
+    assert all(f.bbox is None for f in agg.findings)  # carried in the contract; not wired yet
+
+
+def test_flatten_token_class_amount_passthrough():
+    f = _finding(REV, high_value="amount", before="5,000", after="50,000")
+    agg = aggregate([_stage_result(REV, ConfidenceTier.HIGH, 90, findings=[f])])
+    assert agg.findings[0].token_class == "amount"
+
+
+def test_flatten_token_class_prose_when_text_but_no_high_value():
+    f = _finding(REV, before="paid in full", after="not paid")
+    agg = aggregate([_stage_result(REV, ConfidenceTier.MEDIUM, 50, findings=[f])])
+    assert agg.findings[0].token_class == "prose"
+
+
+def test_flatten_token_class_none_when_no_text():
+    f = _finding(PROV, before=None, after=None, high_value=None)
+    agg = aggregate([_stage_result(PROV, ConfidenceTier.LOW, 10, findings=[f])])
+    assert agg.findings[0].token_class is None
+
+
+# --------------------------------------------------------------------------- #
+# _finding_type per stage — derived from the rich payload, positionally
+# correlated to stage_result.findings (see aggregate.py for the invariant).
+# --------------------------------------------------------------------------- #
+
+def test_finding_type_revision_recovery_from_object_classes():
+    rich = SimpleNamespace(object_classes=(ObjectChangeClass.CONTENT,))
+    payload = SimpleNamespace(findings=[rich])
+    f = _finding(REV)
+    agg = aggregate([_stage_result(REV, ConfidenceTier.HIGH, 90, findings=[f], payload=payload)])
+    assert agg.findings[0].type == "content_edit"
+
+
+def test_finding_type_revision_recovery_priority_content_over_overlay():
+    # CONTENT must win even when OVERLAY is also present (most-severe-first).
+    rich = SimpleNamespace(object_classes=(ObjectChangeClass.OVERLAY, ObjectChangeClass.CONTENT))
+    payload = SimpleNamespace(findings=[rich])
+    agg = aggregate([_stage_result(REV, ConfidenceTier.HIGH, 90, findings=[_finding(REV)], payload=payload)])
+    assert agg.findings[0].type == "content_edit"
+
+
+def test_finding_type_revision_recovery_falls_back_without_payload():
+    f = _finding(REV, high_value="amount")
+    agg = aggregate([_stage_result(REV, ConfidenceTier.HIGH, 90, findings=[f], payload=None)])
+    assert agg.findings[0].type == "amount"
+
+
+def test_finding_type_font_forensics_from_kind():
+    rich = SimpleNamespace(kind=FontFindingKind.INTRA_TOKEN_FONT_MIX)
+    payload = SimpleNamespace(findings=[rich])
+    agg = aggregate([_stage_result(FONT, ConfidenceTier.HIGH, 80, findings=[_finding(FONT)], payload=payload)])
+    assert agg.findings[0].type == "intra_token_font_mix"
+
+
+def test_finding_type_invoice_arithmetic_from_relationship_kind():
+    rich = SimpleNamespace(relationship_kind=RelationshipKind.GRAND_TOTAL)
+    payload = SimpleNamespace(findings=[rich])
+    agg = aggregate([_stage_result(ARITH, ConfidenceTier.MEDIUM, 65, findings=[_finding(ARITH)], payload=payload)])
+    assert agg.findings[0].type == "grand_total"
+
+
+def test_finding_type_provenance_metadata_from_kind():
+    rich = SimpleNamespace(kind=ProvenanceFindingKind.MODDATE_AFTER_CREATION)
+    payload = SimpleNamespace(findings=[rich])
+    agg = aggregate([_stage_result(PROV, ConfidenceTier.MEDIUM, 55, findings=[_finding(PROV)], payload=payload)])
+    assert agg.findings[0].type == "moddate_after_creation"
+
+
+def test_finding_type_ocr_crosscheck_skips_agree_like_the_adapter():
+    # AGREE divergences never become core Findings; the surviving findings list
+    # has 2 entries that must line up with the 2nd/3rd raw divergences.
+    divergences = [
+        SimpleNamespace(type=DivergenceType.AGREE),
+        SimpleNamespace(type=DivergenceType.MISMATCH),
+        SimpleNamespace(type=DivergenceType.EMBEDDED_ONLY),
+    ]
+    payload = SimpleNamespace(result=SimpleNamespace(divergences=divergences))
+    findings = [_finding(OCR), _finding(OCR)]
+    agg = aggregate([_stage_result(OCR, ConfidenceTier.HIGH, 90, findings=findings, payload=payload)])
+    assert [f.type for f in agg.findings] == ["mismatch", "embedded_only"]
+
+
+# --------------------------------------------------------------------------- #
+# PHI-scrub boundary
+# --------------------------------------------------------------------------- #
+
+def test_to_advisory_input_projects_clean_descriptors():
+    f = _finding(REV, high_value="amount", before="5,000", after="50,000", reason="amount changed")
+    results = [_stage_result(REV, ConfidenceTier.HIGH, 90, findings=[f])]
+    agg = aggregate(results)
+    ai = to_advisory_input(agg)
+    assert ai.tier is ConfidenceTier.HIGH
+    assert len(ai.findings) == 1
+    assert ai.findings[0].finding_id == "revision_recovery-0"
+    # Nothing about the raw before/after text or the reason string crosses.
+    for field in dataclasses.fields(ai.findings[0]):
+        assert field.name not in ("before", "after", "reason", "summary", "payload")
+
+
+def test_assert_advisory_safe_passes_on_clean_input():
+    ai = AdvisoryInput(
+        tier=ConfidenceTier.LOW, score=10,
+        stages=(AdvisoryStage(stage=REV, tier=ConfidenceTier.LOW, score=10, ok=True),),
+        findings=(),
+        notes=(),
+    )
+    assert_advisory_safe(ai)  # must not raise
+
+
+def test_assert_advisory_safe_blocks_planted_raw_text_field():
+    finding = AdvisoryFinding(
+        finding_id="revision_recovery-0", stage=REV, type="content_edit",
+        tier=ConfidenceTier.HIGH, score=None, token_class="amount", page=0, bbox=None,
+    )
+    # Plant a raw-text field that is NOT part of the AdvisoryFinding contract —
+    # frozen dataclasses have no __slots__, so this is possible at runtime and
+    # is exactly the leak assert_advisory_safe must catch.
+    object.__setattr__(finding, "raw_text", "the amount was changed from 5,000 to 50,000")
+    ai = AdvisoryInput(
+        tier=ConfidenceTier.HIGH, score=90,
+        stages=(),
+        findings=(finding,),
+        notes=(),
+    )
+    with pytest.raises(ValueError):
+        assert_advisory_safe(ai)
+
+
+def test_assert_advisory_safe_blocks_freetext_leaking_into_a_token_field():
+    finding = AdvisoryFinding(
+        finding_id="revision_recovery-0", stage=REV,
+        type="the policy number was changed from ABC123 to XYZ789",  # leaked content
+        tier=ConfidenceTier.HIGH, score=None, token_class="id", page=0, bbox=None,
+    )
+    ai = AdvisoryInput(tier=ConfidenceTier.HIGH, score=90, stages=(), findings=(finding,), notes=())
+    with pytest.raises(ValueError):
+        assert_advisory_safe(ai)
+
+
+def test_bbox_geometry_is_not_phi_and_survives_the_boundary():
+    bbox = BBox(x0=0.1, y0=0.2, x1=0.3, y1=0.4)
+    finding = AdvisoryFinding(
+        finding_id="ocr_crosscheck-0", stage=OCR, type="mismatch",
+        tier=ConfidenceTier.HIGH, score=None, token_class="amount", page=2, bbox=bbox,
+    )
+    ai = AdvisoryInput(tier=ConfidenceTier.HIGH, score=90, stages=(), findings=(finding,), notes=())
+    assert_advisory_safe(ai)  # geometry alone is not a leak
+    assert ai.findings[0].bbox == bbox
+
+
+# --------------------------------------------------------------------------- #
+# Advisory: grounded, id-citing, INCONCLUSIVE honesty, graceful degradation.
+# --------------------------------------------------------------------------- #
+
+def _advisory_input(tier, score, findings=()):
+    stages = (AdvisoryStage(stage=REV, tier=tier, score=score, ok=True),)
+    return AdvisoryInput(tier=tier, score=score, stages=stages, findings=tuple(findings), notes=())
+
+
+def test_stub_engine_cites_only_supplied_ids():
+    finding = AdvisoryFinding(
+        finding_id="revision_recovery-0", stage=REV, type="content_edit",
+        tier=ConfidenceTier.HIGH, score=None, token_class="amount", page=0, bbox=None,
+    )
+    ai = _advisory_input(ConfidenceTier.HIGH, 90, [finding])
+    out = generate_advisory(ai, engine=StubAdvisoryEngine())
+    assert out.model == "stub"
+    # Stub now produces group_explanations, not per-finding rationales.
+    all_cited = {fid for g in out.group_explanations for fid in g.finding_ids}
+    assert all_cited == {"revision_recovery-0"}
+    assert out.group_explanations[0].what_we_found  # non-empty explanation
+    assert out.group_explanations[0].why_it_matters
+    assert out.group_explanations[0].what_to_check
+
+
+def test_advisory_inconclusive_is_rendered_honestly_not_as_clean():
+    ai = _advisory_input(ConfidenceTier.INCONCLUSIVE, None, [])
+    out = generate_advisory(ai, engine=StubAdvisoryEngine())
+    statement = out.tier_statement.lower()
+    assert "could not assess" in statement
+    # Must explicitly disclaim "clean", never assert it outright.
+    assert "not the same as clean" in statement or "clean" not in statement
+
+
+def test_advisory_disabled_returns_templated_output_without_calling_engine():
+    class Boom:
+        name = "should-not-be-called"
+
+        def is_available(self):
+            raise AssertionError("engine must not be touched when advisory_enabled=False")
+
+        def generate(self, messages):
+            raise AssertionError("engine must not be touched when advisory_enabled=False")
+
+    ai = _advisory_input(ConfidenceTier.LOW, 10, [])
+    out = generate_advisory(ai, engine=Boom(), config=AggregateConfig(advisory_enabled=False))
+    assert out.model == "disabled"
+
+
+def test_advisory_degrades_when_engine_unavailable():
+    class Unavailable:
+        name = "local_llm"
+
+        def is_available(self):
+            return False
+
+        def generate(self, messages):
+            raise AssertionError("must not be called when unavailable")
+
+    ai = _advisory_input(ConfidenceTier.MEDIUM, 50, [])
+    out = generate_advisory(ai, engine=Unavailable())
+    assert "unavailable" in out.model
+    assert out.summary  # still produced a usable, templated explanation
+
+
+def test_advisory_degrades_when_engine_raises():
+    class Explodes:
+        name = "flaky"
+
+        def is_available(self):
+            return True
+
+        def generate(self, messages):
+            raise RuntimeError("model server is down")
+
+    ai = _advisory_input(ConfidenceTier.HIGH, 90, [])
+    out = generate_advisory(ai, engine=Explodes())
+    assert "error" in out.model
+
+
+def test_advisory_degrades_when_engine_cites_unknown_id():
+    from pdf_forgery.aggregate.models import AdvisoryOutput, GroupExplanation
+
+    class CitesGarbage:
+        name = "hallucinating"
+
+        def is_available(self):
+            return True
+
+        def generate(self, messages):
+            return AdvisoryOutput(
+                summary="x", tier_statement="y",
+                group_explanations=(
+                    GroupExplanation(
+                        finding_ids=("not-a-real-id",),
+                        label="x", what_we_found="y", why_it_matters="z", what_to_check="w",
+                    ),
+                ),
+                model=self.name,
+            )
+
+    finding = AdvisoryFinding(
+        finding_id="revision_recovery-0", stage=REV, type="content_edit",
+        tier=ConfidenceTier.HIGH, score=None, token_class="amount", page=0, bbox=None,
+    )
+    ai = _advisory_input(ConfidenceTier.HIGH, 90, [finding])
+    out = generate_advisory(ai, engine=CitesGarbage())
+    assert "malformed" in out.model
+    # Fallback produces groups citing only valid ids.
+    all_cited = {fid for g in out.group_explanations for fid in g.finding_ids}
+    assert all_cited.issubset({"revision_recovery-0"})
+
+
+# --------------------------------------------------------------------------- #
+# Grouping unit tests
+# --------------------------------------------------------------------------- #
+
+def test_group_findings_collapses_identical_type():
+    """N near-identical ocr_crosscheck findings → 1 group, count=N, correct pages."""
+    from pdf_forgery.aggregate.advisory import _group_findings
+
+    findings = [
+        AdvisoryFinding(
+            finding_id=f"ocr_crosscheck-{i}", stage=OCR, type="embedded_only",
+            tier=ConfidenceTier.MEDIUM, score=None, token_class="id", page=i, bbox=None,
+        )
+        for i in range(5)
+    ]
+    ai = AdvisoryInput(
+        tier=ConfidenceTier.MEDIUM, score=50,
+        stages=(AdvisoryStage(stage=OCR, tier=ConfidenceTier.MEDIUM, score=50, ok=True),),
+        findings=tuple(findings),
+    )
+    groups = _group_findings(ai)
+    assert len(groups) == 1
+    g = groups[0]
+    assert g.count == 5
+    assert g.pages == (0, 1, 2, 3, 4)
+    assert set(g.finding_ids) == {f"ocr_crosscheck-{i}" for i in range(5)}
+    assert g.tier is ConfidenceTier.MEDIUM
+
+
+def test_group_findings_escalates_to_max_tier():
+    """Max tier is picked when findings in same group have different tiers."""
+    from pdf_forgery.aggregate.advisory import _group_findings
+
+    findings = [
+        AdvisoryFinding(
+            finding_id="ocr_crosscheck-0", stage=OCR, type="mismatch",
+            tier=ConfidenceTier.LOW, score=None, token_class=None, page=0, bbox=None,
+        ),
+        AdvisoryFinding(
+            finding_id="ocr_crosscheck-1", stage=OCR, type="mismatch",
+            tier=ConfidenceTier.HIGH, score=None, token_class=None, page=1, bbox=None,
+        ),
+    ]
+    ai = AdvisoryInput(
+        tier=ConfidenceTier.HIGH, score=80,
+        stages=(), findings=tuple(findings),
+    )
+    groups = _group_findings(ai)
+    assert len(groups) == 1
+    assert groups[0].tier is ConfidenceTier.HIGH
+
+
+def test_group_findings_splits_different_types():
+    """Different (type, token_class) combos stay in separate groups."""
+    from pdf_forgery.aggregate.advisory import _group_findings
+
+    findings = [
+        AdvisoryFinding(
+            finding_id="ocr_crosscheck-0", stage=OCR, type="embedded_only",
+            tier=ConfidenceTier.MEDIUM, score=None, token_class="id", page=0, bbox=None,
+        ),
+        AdvisoryFinding(
+            finding_id="ocr_crosscheck-1", stage=OCR, type="ocr_only",
+            tier=ConfidenceTier.MEDIUM, score=None, token_class="id", page=0, bbox=None,
+        ),
+    ]
+    ai = AdvisoryInput(
+        tier=ConfidenceTier.MEDIUM, score=50, stages=(), findings=tuple(findings),
+    )
+    groups = _group_findings(ai)
+    assert len(groups) == 2
+
+
+def test_stub_advisory_uses_glossary_language():
+    """Stub advisory explanation should mention glossary meaning, not just type name."""
+    finding = AdvisoryFinding(
+        finding_id="ocr_crosscheck-0", stage=OCR, type="embedded_only",
+        tier=ConfidenceTier.HIGH, score=None, token_class="id", page=2, bbox=None,
+    )
+    ai = _advisory_input(ConfidenceTier.HIGH, 80, [finding])
+    out = generate_advisory(ai, engine=StubAdvisoryEngine())
+    expl = out.group_explanations[0]
+    # The glossary entry for embedded_only mentions "text layer" — not just the type name.
+    assert "text layer" in expl.what_we_found.lower() or "text layer" in expl.label.lower() or "text" in expl.what_we_found.lower()
+    assert expl.what_to_check  # non-empty reviewer action

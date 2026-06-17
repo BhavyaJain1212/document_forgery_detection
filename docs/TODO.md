@@ -130,3 +130,97 @@ double-JPEG quantisation analysis. Expected to consume image bytes from
 Stage 3 already hands off scanned/image-only PDFs to this stage via
 `routed_to="image_forensics"` in the INCONCLUSIVE result. See `docs/FORGERY_METHODS.md`
 for the full taxonomy of raster-level forgery signals.
+
+---
+
+## Stage 6 — Aggregate + PHI-scrub + Advisory + UI (`pdf_forgery/aggregate/`)
+
+Assembly / presentation layer that runs AFTER the detection pipeline, over the
+`list[StageResult]` it returns. Rolls them up into one `AggregateResult`
+(headline via the existing `fusion.fuse()`, plus a flat overlay-ready finding
+list with `bbox`), scrubs that to a descriptor-only `AdvisoryInput` at the single
+PHI boundary, and runs a swappable advisory LLM to explain it as decision
+support. Thin vertical slice; full fusion + full Stage 6 later. Full design
+contract: @docs/STAGE6_DESIGN.md.
+
+### 6.0 — Design contract + stubs ✅ (2026-06-16)
+- [x] `docs/STAGE6_DESIGN.md` (items 1–4 + interfaces/stubs/PHI-safety/GPU note).
+- [x] Stub subpackage `src/pdf_forgery/aggregate/`: data models + config +
+      advisory prompt text real; all logic functions raise `NotImplementedError`;
+      `safe_log` real; pluggable `AdvisoryEngine` (default `StubAdvisoryEngine`,
+      no GPU). Stubs compile; layer NOT yet wired to run after the pipeline.
+
+### 6.1 — Logic (CPU; no GPU), unit-tested ✅ (2026-06-16)
+- [x] `aggregate.aggregate()` — delegates headline to `fusion.fuse()`; flattens
+      findings into `AggregateFinding` descriptors with stable `finding_id`s
+      (`"{stage}-{index}"`).
+- [x] `_flatten_findings` / `_finding_type` / `_finding_bbox` — `type` derived
+      per-stage from the rich payload (`object_classes`/`kind`/
+      `relationship_kind`, with `ocr_crosscheck` re-applying its AGREE filter to
+      stay positionally aligned); `token_class` from `Finding.high_value` /
+      before-after presence. **`bbox` always returns `None` this slice** — no
+      stage payload stores per-page pixel/point dimensions, so pixel/point →
+      canonical `[0,1]` normalization isn't possible without re-opening the
+      source PDF (out of the function's signature). Gap carried forward to 6.2;
+      `docs/FORGERY_METHODS.md`-literal convergence for `type` also deferred.
+- [x] `phi_scrub.to_advisory_input()` — allow-list projection to `AdvisoryInput`;
+      `assert_advisory_safe()` — defensive egress check (rejects smuggled
+      attributes via `object.__setattr__` and over-long/space-containing token
+      fields).
+- [x] `prompts.build_advisory_messages()` + `StubAdvisoryEngine.generate()`
+      (deterministic, no GPU) + `generate_advisory()` (validate cited ids;
+      templated fallback on disabled/unavailable/error/malformed; never raises).
+- [x] Tests (`tests/test_aggregate.py`, 25 cases): roll-up matches
+      `fusion.fuse()`; per-stage `type` derivation; `token_class` derivation;
+      `bbox` is `None` (documented, not yet wired); **PHI-leak assertion** (a
+      planted raw-text field via `object.__setattr__` raises, and so does
+      free-text leaking into a token field); advisory cites only supplied ids;
+      INCONCLUSIVE rendered honestly (never phrased as clean); graceful
+      degradation when disabled / unavailable / raising / malformed. Full suite:
+      717 passed, 1 skipped.
+
+### 6.2 — Reviewer UI thin slice ✅ (2026-06-17)
+Thin vertical slice of Stage 6's item-4 UI: upload → live per-stage progress →
+verdict hero → streamed advisory → expandable per-stage drill-down, on the real
+five-stage pipeline. **Full fusion and the document-overlay (bbox highlight)
+view remain for the real Stage 6; Stage 4 (raster/pixel forensics) is next.**
+- [x] `pipeline.run_pipeline(..., on_progress=cb)` — optional per-stage progress
+      callback (`(stage, "running"|"done"|"error")`); a raising callback is
+      suppressed so reporting never breaks the run.
+- [x] `aggregate/jobs.py` — in-memory `JobManager` + background thread runner
+      (the thin-slice stand-in for Celery/Redis): submit bytes → run the 5
+      stages with live progress → `aggregate()` + `to_advisory_input()`; serves
+      only the scrubbed descriptor view. Advisory generated lazily + cached.
+- [x] `aggregate/api.py` — implemented `submit_document` / `get_job_status` /
+      `stream_advisory` (chunked `AdvisoryEvent`s) over a shared `JobManager`;
+      still framework-free (no web import).
+- [x] `aggregate/server.py` — FastAPI transport: `POST /v1/documents` (202,
+      magic-byte PDF check per invariant #4, 25 MB cap), `GET /v1/jobs/{id}`
+      (scrubbed result), `GET /v1/jobs/{id}/advisory` (SSE); serves the static
+      frontend. Serialization of descriptor dataclasses lives here.
+- [x] `aggregate/webapp/` — hand-crafted CSS **design system** (type/spacing/
+      color tokens, tier = the one semantic color: HIGH crimson / MEDIUM amber /
+      LOW blue / INCONCLUSIVE gray, each paired with icon + label, AA contrast) +
+      vanilla-JS SPA (upload/drag-drop, per-stage progress, verdict hero,
+      streamed advisory via `EventSource`, accordion drill-down, empty + error
+      states). No build toolchain; system font stack (fully local).
+- [x] `LocalLLMAdvisoryEngine` — real Ollama wrap (`GET /api/tags` →
+      `is_available()`, `POST /api/chat` `format:json` → `generate()`); default
+      stays `stub` (no model pulled here; **never download weights**). Graceful
+      absence → templated fallback.
+- [x] Tests `tests/test_web.py` (9 cases): submit→poll→done with stubbed stages,
+      **PHI boundary** (served result carries no before/after, only
+      `token_class`), 404/415/400 transport, SSE chunk+done, cited-id subset.
+      Verified end-to-end through `TestClient` on the real PDFs (tampered→HIGH 85,
+      Acrobat_Demo→HIGH 95, clear invoice→MEDIUM 65). Full suite: 726 passed,
+      1 skipped. Run the app: `./.venv/bin/python -m pdf_forgery.aggregate.server`.
+
+### 6.x — Remaining for the real Stage 6 (deferred)
+- [ ] Document-overlay view: render the page + draw `finding.bbox` boxes. Blocked
+      on populating `bbox` (a stage payload must carry per-page pixel/point dims,
+      or `_finding_bbox` must widen to re-open the source PDF). Coords already
+      flow through the data model + API unchanged.
+- [ ] Full fusion (cross-stage geometric correlation / dedup / calibration curve).
+- [ ] Durable jobs (Celery/Redis/Postgres) replacing the in-memory `JobManager`.
+- [ ] Gated, audit-logged evidence endpoint for raw before→after (the one path
+      raw text is allowed, authenticated only).

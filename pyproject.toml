@@ -20,9 +20,18 @@ dependencies = [
 dev = [
     "pytest>=8",
 ]
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+]
 
 [project.scripts]
 pdf-forgery = "pdf_forgery.cli:main"
+pdf-forgery-web = "pdf_forgery.aggregate.server:main"
+
+[tool.setuptools.package-data]
+pdf_forgery = ["aggregate/webapp/*"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

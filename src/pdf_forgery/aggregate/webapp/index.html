@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>Claim Document Review</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="app-header__inner">
+        <div class="brand">
+          <span class="brand__mark" aria-hidden="true">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+              stroke-linejoin="round">
+              <path d="M12 3l7 3v5c0 4.4-3 7.3-7 8.5C8 17.3 5 14.4 5 10V6l7-3z" />
+              <path d="M9.5 11.5l1.8 1.8 3.4-3.6" />
+            </svg>
+          </span>
+          <span class="brand__name">
+            Claim Document Review
+            <span class="brand__sub">Forgery-detection decision support</span>
+          </span>
+        </div>
+        <span class="header-tag">Advisory — reviewer decides</span>
+      </div>
+    </header>
+
+    <main class="main">
+      <!-- Upload -->
+      <section id="view-upload" class="view">
+        <div id="dropzone" class="upload" role="button" tabindex="0"
+          aria-label="Upload a PDF claim document">
+          <div class="upload__icon" aria-hidden="true">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+              stroke-linejoin="round">
+              <path d="M12 16V4" />
+              <path d="M8 8l4-4 4 4" />
+              <path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16" />
+            </svg>
+          </div>
+          <h1 class="upload__title">Upload a claim document for review</h1>
+          <p class="upload__copy">
+            An automated pipeline checks the document for signs of tampering.
+            Results are advisory — you make the final decision.
+          </p>
+          <button id="browse-btn" class="btn btn--primary" type="button">
+            Choose PDF
+          </button>
+          <p class="upload__drophint">or drag and drop it here</p>
+          <p class="upload__hint">PDF only · up to 25&nbsp;MB · processed locally</p>
+          <input id="file-input" type="file" accept="application/pdf,.pdf"
+            class="hidden" />
+        </div>
+      </section>
+
+      <!-- Processing -->
+      <section id="view-processing" class="view hidden"></section>
+
+      <!-- Result -->
+      <section id="view-result" class="view hidden"></section>
+
+      <!-- Error -->
+      <section id="view-error" class="view hidden"></section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

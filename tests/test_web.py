@@ -1,0 +1,202 @@
+"""Web layer (Stage 6.2): job manager, API handlers, FastAPI server, SSE.
+
+These are kept fast by stubbing the detection stages — the real five-stage
+pipeline (PaddleOCR etc.) is exercised by the acceptance tests, not here. The
+focus is the transport + the PHI boundary: that the served payloads are the
+scrubbed descriptor view and never carry raw before/after text.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+
+import pytest
+
+from pdf_forgery.aggregate import api, jobs, server
+from pdf_forgery.aggregate.config import AggregateConfig
+from pdf_forgery.core.types import ConfidenceTier, Finding, StageResult
+
+_MINIMAL_PDF = b"%PDF-1.4\n%%EOF\n"
+
+
+class _FakeStage:
+    """A trivial Stage that returns a canned result (no real analysis)."""
+
+    def __init__(self, result: StageResult) -> None:
+        self.name = result.stage
+        self._result = result
+
+    def run(self, pdf_bytes, ctx) -> StageResult:  # noqa: ANN001 - test stub
+        return self._result
+
+
+def _fake_results() -> list[StageResult]:
+    high = StageResult(
+        stage="invoice_arithmetic",
+        tier=ConfidenceTier.HIGH,
+        score=85,
+        findings=(
+            Finding(
+                stage="invoice_arithmetic",
+                tier=ConfidenceTier.HIGH,
+                reason="a total does not reconcile",
+                page=1,
+                before="37004.49",  # raw text — MUST NOT cross the boundary
+                after="374.49",
+                high_value="amount",
+            ),
+        ),
+        summary="one broken equation",
+    )
+    benign = StageResult(
+        stage="provenance_metadata",
+        tier=ConfidenceTier.LOW,
+        score=10,
+        findings=(),
+        summary="nothing notable",
+    )
+    return [high, benign]
+
+
+@pytest.fixture
+def stub_pipeline(monkeypatch):
+    """Point the job manager's stage builder at fast canned stages."""
+    results = _fake_results()
+    monkeypatch.setattr(
+        jobs, "build_default_stages", lambda: [_FakeStage(r) for r in results]
+    )
+    # Fresh manager per test so jobs do not leak across tests.
+    api.configure_manager(AggregateConfig())
+    yield results
+
+
+def _run_to_done(job_id: str, manager) -> None:
+    for _ in range(200):
+        job = manager.get(job_id)
+        if job is not None and job.state in (jobs.DONE, jobs.ERROR):
+            return
+        time.sleep(0.01)
+    raise AssertionError("job did not finish in time")
+
+
+# ---------------------------------------------------------------------------
+# Job manager / API handlers
+# ---------------------------------------------------------------------------
+
+def test_submit_runs_pipeline_and_scrubs(stub_pipeline):
+    manager = api.get_manager()
+    submission = api.submit_document(_MINIMAL_PDF, filename="claim.pdf")
+    assert submission.status_url.endswith(submission.job_id)
+
+    _run_to_done(submission.job_id, manager)
+    status = api.get_job_status(submission.job_id)
+
+    assert status.state == jobs.DONE
+    assert status.result is not None
+    # Headline fused to HIGH (a substantive HIGH stage originates the verdict).
+    assert status.result.tier == ConfidenceTier.HIGH
+    # Per-stage progress is reported for every canonical stage row.
+    assert [s.stage for s in status.stages] == list(jobs.STAGE_ORDER)
+
+
+def test_served_result_carries_no_raw_text(stub_pipeline):
+    """The PHI boundary: the served (scrubbed) result must not leak before/after."""
+    manager = api.get_manager()
+    submission = api.submit_document(_MINIMAL_PDF, filename="claim.pdf")
+    _run_to_done(submission.job_id, manager)
+    status = api.get_job_status(submission.job_id)
+
+    served = json.dumps(server._advisory_input_dict(status.result))
+    assert "37004.49" not in served
+    assert "374.49" not in served
+    # The token *class* is allowed (kind, not value).
+    assert '"token_class": "amount"' in served
+
+
+def test_unknown_job_raises_keyerror(stub_pipeline):
+    with pytest.raises(KeyError):
+        api.get_job_status("does-not-exist")
+
+
+def test_advisory_stream_cites_only_known_ids(stub_pipeline):
+    manager = api.get_manager()
+    submission = api.submit_document(_MINIMAL_PDF, filename="claim.pdf")
+    _run_to_done(submission.job_id, manager)
+
+    events = list(api.stream_advisory(submission.job_id))
+    assert events[-1].event == "done"
+    out = events[-1].output
+    valid = {f.finding_id for f in api.get_job_status(submission.job_id).result.findings}
+    # Primary: group_explanations cite only valid ids.
+    all_cited = {fid for g in out.group_explanations for fid in g.finding_ids}
+    assert all_cited.issubset(valid)
+    assert any(e.event == "chunk" for e in events)
+
+
+def test_advisory_stream_unknown_job_yields_error(stub_pipeline):
+    events = list(api.stream_advisory("nope"))
+    assert len(events) == 1 and events[0].event == "error"
+
+
+# ---------------------------------------------------------------------------
+# FastAPI server (transport + validation)
+# ---------------------------------------------------------------------------
+
+def test_server_rejects_non_pdf(stub_pipeline):
+    from fastapi.testclient import TestClient
+
+    client = TestClient(server.app)
+    res = client.post(
+        "/v1/documents", files={"file": ("x.pdf", b"not a pdf", "application/pdf")}
+    )
+    assert res.status_code == 415
+
+
+def test_server_rejects_empty(stub_pipeline):
+    from fastapi.testclient import TestClient
+
+    client = TestClient(server.app)
+    res = client.post("/v1/documents", files={"file": ("x.pdf", b"", "application/pdf")})
+    assert res.status_code == 400
+
+
+def test_server_full_flow_and_sse(stub_pipeline):
+    from fastapi.testclient import TestClient
+
+    client = TestClient(server.app)
+    res = client.post(
+        "/v1/documents", files={"file": ("claim.pdf", _MINIMAL_PDF, "application/pdf")}
+    )
+    assert res.status_code == 202
+    job_id = res.json()["job_id"]
+
+    status = {}
+    for _ in range(200):
+        status = client.get(f"/v1/jobs/{job_id}").json()
+        if status["state"] in ("done", "error"):
+            break
+        time.sleep(0.01)
+    assert status["state"] == "done"
+    assert status["result"]["tier"] == "high"
+    # bbox is part of the contract even though it is None this slice.
+    assert all("bbox" in f for f in status["result"]["findings"])
+
+    with client.stream("GET", f"/v1/jobs/{job_id}/advisory") as resp:
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        body = "".join(resp.iter_text())
+    assert "event: done" in body
+    assert "event: chunk" in body
+    # The done payload must carry group_explanations.
+    import re as _re
+    done_data = _re.search(r"event: done\ndata: (\{.*\})", body)
+    assert done_data is not None
+    done_json = json.loads(done_data.group(1))
+    assert "group_explanations" in done_json
+
+
+def test_server_unknown_job_404(stub_pipeline):
+    from fastapi.testclient import TestClient
+
+    client = TestClient(server.app)
+    assert client.get("/v1/jobs/missing").status_code == 404

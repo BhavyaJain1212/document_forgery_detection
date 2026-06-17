@@ -12,12 +12,18 @@ so one stage erroring never aborts the others.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from .core.context import AnalysisContext
 from .core.stage import Stage
 from .core.types import ConfidenceTier, StageResult
+
+#: Called with ``(stage_name, state)`` as the pipeline advances, where ``state``
+#: is ``"running"`` (just before a stage starts) then ``"done"`` / ``"error"``
+#: (after it finishes, reflecting RUN success — never the verdict). Lets a caller
+#: surface live per-stage progress (e.g. the reviewer UI) without polling.
+ProgressCallback = Callable[[str, str], None]
 
 
 def run_pipeline(
@@ -25,6 +31,7 @@ def run_pipeline(
     stages: Sequence[Stage],
     *,
     path: str | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> list[StageResult]:
     """Run ``stages`` over ``pdf_bytes`` and return their results in order.
 
@@ -32,17 +39,37 @@ def run_pipeline(
     Stages are expected not to raise (per the :class:`Stage` contract); should one
     raise anyway, the failure is captured as an ``ok=False`` :class:`StageResult`
     rather than aborting the run.
+
+    ``on_progress``, if given, is invoked with ``(stage_name, "running")`` before
+    each stage and ``(stage_name, "done"|"error")`` after it, so a caller can
+    stream live progress. A progress callback that itself raises is suppressed —
+    reporting must never break the run.
     """
     results: list[StageResult] = []
     with AnalysisContext(pdf_bytes, path=path) as ctx:
         for stage in stages:
-            results.append(_run_one(stage, pdf_bytes, ctx))
+            name = _stage_name(stage)
+            _emit(on_progress, name, "running")
+            result = _run_one(stage, pdf_bytes, ctx)
+            results.append(result)
+            _emit(on_progress, name, "done" if result.ok else "error")
     return results
+
+
+def _emit(on_progress: ProgressCallback | None, name: str, state: str) -> None:
+    if on_progress is None:
+        return
+    try:
+        on_progress(name, state)
+    except Exception:  # progress reporting must never break the run
+        pass
 
 
 def run_pipeline_on_path(
     path: str | Path,
     stages: Sequence[Stage],
+    *,
+    on_progress: ProgressCallback | None = None,
 ) -> list[StageResult]:
     """Read a PDF file (read-only) and run the pipeline over it.
 
@@ -58,7 +85,7 @@ def run_pipeline_on_path(
         raw = p.read_bytes()
     except OSError as exc:
         return _failed_all(stages, str(path), f"could not read file: {exc}")
-    return run_pipeline(raw, stages, path=str(path))
+    return run_pipeline(raw, stages, path=str(path), on_progress=on_progress)
 
 
 # ---------------------------------------------------------------------------
