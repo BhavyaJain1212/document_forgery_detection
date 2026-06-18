@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from ..core.geometry import pdf_bbox_to_canonical, pixel_bbox_to_canonical
 from ..core.types import Finding, StageResult
 from ..fusion import fuse
 from .config import AggregateConfig
@@ -166,22 +167,172 @@ def _ocr_divergences_excluding_agree(payload: object):
     return [d for d in divergences if d.type.value != "agree"]
 
 
+def _clamp01(value: float) -> float:
+    """Clamp ``value`` into ``[0, 1]`` (defensive against off-page coordinates)."""
+    return max(0.0, min(1.0, value))
+
+
 def _finding_bbox(stage_result: StageResult, finding: Finding, index: int) -> BBox | None:
     """Convert a finding's native geometry into the canonical normalized box.
 
-    Native spaces differ per stage (``ocr_crosscheck``: pixel space at
-    ``render_dpi``; ``font_forensics`` / ``invoice_arithmetic``: PDF points,
-    bottom-left origin). Returns ``None`` for every stage this slice: the
-    geometry exists on each stage's rich payload, but normalizing it to
-    ``[0, 1]`` needs the page's pixel/point dimensions, which none of the
-    stage payloads currently carry (``ocr_crosscheck``'s ``RenderProvenance``
-    has ``render_dpi`` but no per-page size; ``font_forensics`` /
-    ``invoice_arithmetic`` have the PDF-points bbox but no page height to flip
-    the bottom-left origin). Re-deriving it would mean re-opening the source
-    PDF, which this function does not have access to. The contract is fixed
-    now; wiring real bboxes is a follow-up once a stage payload carries page
-    dimensions.
+    Each stage stores its bbox in a different native coordinate space.
+    This function normalizes all of them into canonical ``[0,1]`` top-left
+    :class:`BBox` using per-stage branches.  Returns ``None`` when localization
+    is not possible (missing page dims, sentinel bbox, guard mismatch).
+
+    Positional-integrity guards verify that the rich finding at ``payload[index]``
+    actually corresponds to ``finding`` (matching page + natural identifier) before
+    trusting the index.  On any mismatch the function returns ``None`` rather than
+    attaching a box to the wrong finding.
     """
+    stage = stage_result.stage
+    payload = stage_result.payload
+
+    # ------------------------------------------------------------------ #
+    # revision_recovery — pdfplumber top-left points, no origin flip needed
+    # ------------------------------------------------------------------ #
+    if stage == "revision_recovery":
+        rich = _payload_findings(payload)
+        if rich is None or index >= len(rich):
+            return None
+        rf = rich[index]
+        if finding.page != getattr(rf, "page_index", None):
+            return None
+        if tuple(finding.object_ids) != tuple(getattr(rf, "object_ids", ())):
+            return None
+        location = getattr(rf, "location", None)
+        if location is None or not location.boxes:
+            return None
+        width = location.page_width_pt
+        height = location.page_height_pt
+        if width <= 0 or height <= 0:
+            return None
+        x0 = min(b.x0 for b in location.boxes)
+        y0 = min(b.top for b in location.boxes)
+        x1 = max(b.x1 for b in location.boxes)
+        y1 = max(b.bottom for b in location.boxes)
+        return BBox(
+            x0=_clamp01(x0 / width),
+            y0=_clamp01(y0 / height),
+            x1=_clamp01(x1 / width),
+            y1=_clamp01(y1 / height),
+        )
+
+    # ------------------------------------------------------------------ #
+    # invoice_arithmetic — PDF user space (bottom-left, points)
+    # ------------------------------------------------------------------ #
+    if stage == "invoice_arithmetic":
+        rich = _payload_findings(payload)
+        if rich is None or index >= len(rich):
+            return None
+        rf = rich[index]
+        # Positional-integrity guard: page + high_value.
+        if finding.page != getattr(rf, "page_index", None):
+            return None
+        rf_hv = getattr(rf, "high_value", None)
+        rf_hv_str = rf_hv.value if rf_hv is not None else None
+        if finding.high_value != rf_hv_str:
+            return None
+        bbox = getattr(rf, "bbox", (0.0, 0.0, 0.0, 0.0))
+        if bbox == (0.0, 0.0, 0.0, 0.0):
+            return None  # output cell was None (sentinel)
+        page = getattr(rf, "page_index", None)
+        dims = getattr(payload, "page_dims", ())
+        if page is None or page >= len(dims):
+            return None
+        W, H = dims[page]
+        rots = getattr(payload, "page_rotations", ())
+        rot = rots[page] if page < len(rots) else 0
+        result = pdf_bbox_to_canonical(bbox, page_width_pt=W, page_height_pt=H, rotate=rot)
+        if result is None:
+            return None
+        return BBox(*result)
+
+    # ------------------------------------------------------------------ #
+    # font_forensics — PDF user space (bottom-left, points)
+    # ------------------------------------------------------------------ #
+    if stage == "font_forensics":
+        rich = _payload_findings(payload)
+        if rich is None or index >= len(rich):
+            return None
+        rf = rich[index]
+        # Positional-integrity guard: page + high_value.
+        if finding.page != getattr(rf, "page_index", None):
+            return None
+        rf_hv = getattr(rf, "high_value", None)
+        rf_hv_str = rf_hv.value if rf_hv is not None else None
+        if finding.high_value != rf_hv_str:
+            return None
+        page = getattr(rf, "page_index", None)
+        dims = getattr(payload, "page_dims", ())
+        if page is None or page >= len(dims):
+            return None
+        W, H = dims[page]
+        rots = getattr(payload, "page_rotations", ())
+        rot = rots[page] if page < len(rots) else 0
+        # For INTRA_TOKEN_FONT_MIX, prefer the union of suspicious glyph bboxes
+        # (precise — points at the inserted char); fall back to the token bbox.
+        kind_val = getattr(getattr(rf, "kind", None), "value", "")
+        suspicious = getattr(rf, "suspicious_bboxes", ())
+        if kind_val == "intra_token_font_mix" and suspicious:
+            all_boxes = list(suspicious)
+        else:
+            token_bbox = getattr(rf, "bbox", (0.0, 0.0, 0.0, 0.0))
+            if token_bbox == (0.0, 0.0, 0.0, 0.0):
+                return None
+            all_boxes = [token_bbox]
+        ux0 = min(b[0] for b in all_boxes)
+        uy0 = min(b[1] for b in all_boxes)
+        ux1 = max(b[2] for b in all_boxes)
+        uy1 = max(b[3] for b in all_boxes)
+        result = pdf_bbox_to_canonical(
+            (ux0, uy0, ux1, uy1), page_width_pt=W, page_height_pt=H, rotate=rot
+        )
+        if result is None:
+            return None
+        return BBox(*result)
+
+    # ------------------------------------------------------------------ #
+    # ocr_crosscheck — pixel space (top-left, already rotation-correct)
+    # ------------------------------------------------------------------ #
+    if stage == "ocr_crosscheck":
+        # Use the AGREE-filtered divergence list (same filter the adapter applied).
+        divergences = _ocr_divergences_excluding_agree(payload)
+        if divergences is None or index >= len(divergences):
+            return None
+        d = divergences[index]
+        # Positional-integrity guard: page + high_value mapping.
+        if finding.page != getattr(d, "page_index", None):
+            return None
+        tc = getattr(d, "token_class", None)
+        tc_val = getattr(tc, "value", None)
+        ocr_hv = tc_val if tc_val in ("amount", "date", "id") else None
+        if finding.high_value != ocr_hv:
+            return None
+        page = getattr(d, "page_index", None)
+        dims_px = getattr(payload, "page_dims_px", ())
+        if page is None or page >= len(dims_px):
+            return None
+        Wpx, Hpx = dims_px[page]
+        boxes: list[tuple[float, float, float, float]] = []
+        for w in getattr(d, "embedded", ()):
+            boxes.append(w.bbox)
+        ocr_box = getattr(d, "ocr", None)
+        if ocr_box is not None:
+            boxes.append(ocr_box.bbox)
+        if not boxes:
+            return None
+        ux0 = min(b[0] for b in boxes)
+        uy0 = min(b[1] for b in boxes)
+        ux1 = max(b[2] for b in boxes)
+        uy1 = max(b[3] for b in boxes)
+        result = pixel_bbox_to_canonical(
+            (ux0, uy0, ux1, uy1), page_width_px=Wpx, page_height_px=Hpx
+        )
+        if result is None:
+            return None
+        return BBox(*result)
+
     return None
 
 

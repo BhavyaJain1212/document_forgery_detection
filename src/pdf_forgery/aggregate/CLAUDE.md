@@ -156,3 +156,78 @@ evidence endpoint. See `docs/STAGE6_DESIGN.md` §6.
     four tiers). Full suite: **726 passed, 1 skipped**.
   - **Still open:** `bbox` still `None` (overlay view blocked on it); full fusion;
     durable jobs; the gated raw-evidence endpoint.
+
+- [x] **bbox wired for revision_recovery + baked overlay PNG** (2026-06-17)
+  - Closes the long-standing `_finding_bbox`-returns-`None` gap for the
+    `revision_recovery` stage (others still `None` — their payloads still lack
+    per-page dims). The rich `revision_recovery.Finding` now carries a
+    `location` (per-word `BoxPt`es in pdfplumber points + page visual dims); see
+    that stage's CLAUDE.md for the localizer.
+  - **`aggregate.py:_finding_bbox`**: for `stage == "revision_recovery"`, unions
+    the located boxes and normalizes by page dims → canonical `[0,1]` `BBox`.
+    Includes a **positional-integrity guard**: verifies the rich finding's
+    `page_index`/`object_ids` match the core finding before trusting the
+    positional index (the rich↔core map is a strict 1:1 in `adapter.py`, but the
+    guard makes a future filter/reorder fail safe → `None`, never a wrong box).
+  - **`overlay.py`** (new): `render_page_overlay(pdf_bytes, page, boxes_pt, cfg)`
+    bakes an annotated PNG (pypdfium2 raster + Pillow boxes; scale = dpi/72,
+    visual orientation). **This PNG is PHI** (real document pixels) → served ONLY
+    via the gated evidence endpoint, never the scrubbed advisory channel. Returns
+    `None` (never raises) when pypdfium2/Pillow absent or render fails.
+  - **config.py**: `overlay_dpi` (150), `overlay_box_rgb`, `overlay_box_width`,
+    `overlay_fill_alpha`.
+  - **Endpoint**: `GET /v1/jobs/{job_id}/findings/{finding_id}/overlay.png`
+    (gated evidence). `jobs.Job` now retains `pdf_bytes` (server-side, PHI);
+    `JobManager.render_overlay` + `api.get_finding_overlay` back it. Only
+    `revision_recovery-*` findings localize today.
+  - PHI invariant tested (`test_web.py`): the served descriptor carries the
+    `bbox` (coordinates) but NO document text; the pixels come only from the
+    gated PNG endpoint. Tests: `tests/test_overlay.py` (4),
+    `tests/test_aggregate.py` (+6 bbox), `tests/test_web.py` (+2 gated). Full
+    suite **757 passed, 1 skipped**.
+
+- [x] **Reviewer UI: two-column result + document overlay view** (2026-06-17)
+  - The result view is now a **two-column split** (`webapp/`): analysis on the
+    LEFT (existing hero + advisory + detector breakdown), the **document on the
+    RIGHT** with CSS bounding boxes drawn over the flagged text. Boxes use the
+    normalized `bbox` already in the scrubbed result; page pixels come from a new
+    plain page-image endpoint `GET /v1/jobs/{job_id}/pages/{page}/image.png`
+    (`JobManager.render_page` → `render_page_overlay(..., boxes=[])`; gated/PHI
+    like the overlay PNG). Chose CSS overlay over the baked PNG so one page image
+    carries all boxes, tier-coloured to match the theme, and interactive.
+  - `app.js`: `renderDocPane` / `docPageFigure` / `bindDocPane` (hover a finding
+    row → its box pulses; click → scroll-into-view). Empty state when no finding
+    localises. `showView` adds `body.result-wide` so only the result view widens
+    to 1160px; upload/processing/error stay narrow. `styles.css` adds
+    `.result__split` (stacks < 980px), `.docpane` (sticky), `.docbox` (tier
+    color via `color-mix`). Verified visually (headless-Chrome screenshot: box
+    lands exactly on the edited `50,000`). Test: `test_web.py` page-image (+1).
+    Full suite **758 passed, 1 skipped**. Still only `revision_recovery` findings
+    localise; others show the empty state.
+
+- [x] **Multipage UI fix: blank page images + truncated advisory** (2026-06-18)
+  - Symptom: on the 13-page `Microsoft-Sample-Invoice_clear.pdf` the document
+    pane showed empty page rows and the streamed advisory stopped after ~3 words
+    ("Across **font_forensics** and"). Single-page docs were fine — this is the
+    only multipage test file.
+  - **Root cause: `pypdfium2` is NOT thread-safe.** The result screen opens the
+    advisory SSE stream AND the browser fires ~6+ parallel `pages/{N}/image.png`
+    requests (13 pages here vs 1 for single-page docs). FastAPI runs the sync
+    handlers on its threadpool, so `render_page_overlay`'s concurrent
+    `PdfDocument` renders corrupt each other — reproduced standalone: 13 parallel
+    renders → **9 None + corrupt 9786-byte blanks**. The blanks 404 → empty page
+    rows. The same instability drops the in-flight advisory SSE connection
+    mid-stream (the advisory text is generated COMPLETE server-side — verified via
+    an in-process job run — so the truncation was purely the dropped connection,
+    not the generator). Both symptoms, one cause. Not a regression from the
+    arithmetic/OCR fixes; the race was always there (hence "4–5 pages" before, "0"
+    now — nondeterministic).
+  - **Fix:** a module-level `threading.Lock` (`overlay._RENDER_LOCK`) serializes
+    the `pypdfium2` open→render→close block in `render_page_overlay` (covers both
+    the page-image and gated-overlay endpoints). Pillow box-drawing/compositing
+    stays OUTSIDE the lock (thread-safe; keeps hold-time minimal). Renders are
+    <0.1s so serializing the burst is cheap. With the lock, 13 concurrent renders
+    → **0 failures**, verified both standalone and through the real FastAPI
+    `TestClient` (13/13 → 200, full-size PNGs).
+  - Test: `tests/test_overlay.py::test_concurrent_renders_all_succeed` (12
+    threads, every render a valid PNG). Full suite: **822 passed, 1 skipped**.

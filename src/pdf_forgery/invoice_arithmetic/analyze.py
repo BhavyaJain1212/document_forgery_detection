@@ -12,6 +12,7 @@ stages); otherwise it extracts glyphs straight from the bytes.
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
 from ..core.context import AnalysisContext
@@ -35,7 +36,7 @@ def analyze_bytes(
     notes: list[str] = []
 
     try:
-        glyphs, page_count = _extract(raw, ctx)
+        glyphs, page_count, page_dims, page_rotations = _extract(raw, ctx, cfg)
     except Exception as exc:  # extraction must never abort the stage
         return InvoiceReport(
             path=path, ok=False, tier=ConfidenceTier.INCONCLUSIVE, score=None,
@@ -85,6 +86,8 @@ def analyze_bytes(
         notes=tuple(notes),
         error=None,
         raw_size=len(raw),
+        page_dims=page_dims,
+        page_rotations=page_rotations,
         _tables=tuple(tables),
     )
 
@@ -133,15 +136,83 @@ def analyze_path_as_stage(
 # Internals
 # ---------------------------------------------------------------------------
 
-def _extract(raw: bytes, ctx: AnalysisContext | None) -> tuple[list[Glyph], int]:
-    """Extract glyphs, preferring the shared context's cached layouts."""
+def _extract(
+    raw: bytes,
+    ctx: AnalysisContext | None,
+    cfg: InvoiceConfig,
+) -> tuple[list[Glyph], int, tuple[tuple[float, float], ...], tuple[int, ...]]:
+    """Extract glyphs plus per-page dims/rotations (preferring the shared context)."""
     if ctx is not None:
         layouts = ctx.page_layouts
         if layouts:
-            return glyphs_from_layouts(layouts), len(layouts)
+            if cfg.enable_localization:
+                dims: tuple[tuple[float, float], ...] = tuple(
+                    (float(p.width), float(p.height)) for p in layouts
+                )
+                rots: tuple[int, ...] = tuple(_get_page_rotations(raw, ctx))
+            else:
+                dims, rots = (), ()
+            return glyphs_from_layouts(layouts), len(layouts), dims, rots
     glyphs = glyphs_from_bytes(raw)
     page_count = 1 + max((g.page_index for g in glyphs), default=-1)
-    return glyphs, page_count
+    if cfg.enable_localization:
+        dims = _get_page_dims_from_bytes(raw)
+        rots = tuple(_get_page_rotations(raw, None))
+    else:
+        dims, rots = (), ()
+    return glyphs, page_count, dims, rots
+
+
+def _get_page_dims_from_bytes(raw: bytes) -> tuple[tuple[float, float], ...]:
+    """Extract per-page (width_pt, height_pt) via pdfminer, falling back to pikepdf."""
+    try:
+        from pdfminer.high_level import extract_pages
+        layouts = list(extract_pages(BytesIO(raw)))
+        return tuple((float(p.width), float(p.height)) for p in layouts)
+    except Exception:
+        pass
+    try:
+        import pikepdf
+        doc = pikepdf.open(BytesIO(raw))
+        dims: list[tuple[float, float]] = []
+        for page in doc.pages:
+            mb = page.get("/MediaBox", None)
+            if mb is not None:
+                w = abs(float(mb[2]) - float(mb[0]))
+                h = abs(float(mb[3]) - float(mb[1]))
+                dims.append((w, h))
+            else:
+                dims.append((595.0, 842.0))
+        return tuple(dims)
+    except Exception:
+        return ()
+
+
+def _get_page_rotations(raw: bytes, ctx: object | None) -> list[int]:
+    """Return per-page /Rotate values (0/90/180/270) from pikepdf."""
+    try:
+        pike = None
+        if ctx is not None:
+            try:
+                pike = ctx.pikepdf_doc  # type: ignore[union-attr]
+            except Exception:
+                pass
+        if pike is None:
+            import pikepdf
+            pike = pikepdf.open(BytesIO(raw))
+        rotations: list[int] = []
+        for page in pike.pages:
+            raw_r = page.get("/Rotate", None)
+            if raw_r is None:
+                rotations.append(0)
+            else:
+                try:
+                    rotations.append(int(raw_r) % 360)
+                except Exception:
+                    rotations.append(0)
+        return rotations
+    except Exception:
+        return []
 
 
 def _failed_report(path: str, error: str) -> InvoiceReport:

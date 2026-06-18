@@ -9,6 +9,8 @@ compared with both an absolute and a relative tolerance so legitimate rounding
 
 from __future__ import annotations
 
+import re
+
 from .config import InvoiceConfig
 from .models import (
     Cell,
@@ -284,6 +286,53 @@ def _within_tolerance(expected: float, stated: float, cfg: InvoiceConfig) -> boo
     return delta <= cfg.rel_tolerance * max(abs(expected), 1e-9)
 
 
+def _displayed_decimals(cell: Cell | None) -> int | None:
+    """Number of decimal places printed for a numeric cell, from its raw text.
+
+    ``"0.08"`` -> 2, ``"3"`` -> 0, ``"1,234"`` -> 0. Returns ``None`` when the
+    cell or its text is missing so the caller can skip the rounding band.
+    """
+    if cell is None or not cell.text:
+        return None
+    # Last run of digits after a decimal point in the printed cell.
+    m = re.search(r"\.(\d+)", cell.text)
+    if m:
+        return len(m.group(1))
+    return 0 if re.search(r"\d", cell.text) else None
+
+
+def _rate_rounding_ok(
+    qty_c: Cell | None,
+    rate_c: Cell | None,
+    qty: float,
+    rate: float,
+    stated: float,
+    cfg: InvoiceConfig,
+) -> bool:
+    """True when ``stated`` falls inside the qty*rate interval implied by the
+    RATE's printed decimal precision (true rate = ``shown ± ½·10^-decimals``).
+
+    This is the correct bound for a line whose rate is displayed rounded (Azure
+    usage bills print a 2-dp rate over a multi-dp true rate): the product cannot
+    be verified tighter than the rate's printed precision allows. ``qty`` is
+    treated as exact — quantities are exact counts/measurements shown at full
+    precision, and widening by an integer qty's ±0.5 would dangerously mask a
+    moderate amount edit. A genuine tamper (amount ~100x off, operands
+    untouched) stays far outside this band and still flags.
+    """
+    if not cfg.rate_precision_aware:
+        return False
+    rate_dec = _displayed_decimals(rate_c)
+    if rate_dec is None:
+        return False
+    rate_half = 0.5 * (10.0 ** -rate_dec)
+    lo = qty * (rate - rate_half)
+    hi = qty * (rate + rate_half)
+    if lo > hi:  # negative qty flips the interval
+        lo, hi = hi, lo
+    return lo - cfg.abs_tolerance <= stated <= hi + cfg.abs_tolerance
+
+
 def _is_gross(expected: float, stated: float, cfg: InvoiceConfig) -> bool:
     """A break far outside tolerance — not plausibly rounding/extraction noise."""
     rel = abs(expected - stated) / max(abs(expected), 1e-9)
@@ -300,8 +349,12 @@ def _make_relationship(
     input_cells: tuple[Cell, ...],
     cfg: InvoiceConfig,
     invoice: LogicalInvoice,
+    within_override: bool = False,
 ) -> Relationship:
-    within = _within_tolerance(expected, stated, cfg)
+    # ``within_override`` lets a caller accept a relationship the plain
+    # tolerance would reject (e.g. the LINE_ITEM rate-rounding band) WITHOUT
+    # ever turning a real break into a pass it cannot also reach via tolerance.
+    within = _within_tolerance(expected, stated, cfg) or within_override
     return Relationship(
         kind=kind,
         page_index=page_index,
@@ -352,11 +405,12 @@ def _line_items(
             f"qty({_fmt(qty)}) * rate({_fmt(rate)}) = {_fmt(expected)}, "
             f"stated {_fmt(amount)}"
         )
+        rounding_ok = _rate_rounding_ok(qty_c, rate_c, qty, rate, amount, cfg)
         rels.append(
             _make_relationship(
                 RelationshipKind.LINE_ITEM, table.page_index, eq, expected, amount,
                 output_cell=amt_c, input_cells=(qty_c, rate_c), cfg=cfg,
-                invoice=invoice,
+                invoice=invoice, within_override=rounding_ok,
             )
         )
     return rels

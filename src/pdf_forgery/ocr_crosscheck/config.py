@@ -59,6 +59,22 @@ class OCRCrossCheckConfig:
     """PaddleOCR 3.x textline-orientation classifier. Off: digital-native PDF
     text lines are axis-aligned; the classifier is for rotated/skewed scans."""
 
+    ocr_max_side_px: int = 2000
+    """Cap the longest side (px) of the image actually fed to OCR. A 300-DPI A4
+    page is ~3300px on its long edge; PaddleOCR's GPU working set scales with
+    image area, so on an 8GB card the allocator fills up after the first dense
+    page and every subsequent page throws CUDA OOM (silently → 0 words → every
+    embedded word becomes a false 'hidden text' orphan). Downscaling the OCR
+    input below this cap keeps the working set bounded; the engine rescales the
+    returned boxes back to the full render_dpi raster space so alignment is
+    unchanged. Set to 0 to disable the cap."""
+
+    ocr_empty_cache_between_pages: bool = True
+    """Release PaddlePaddle's GPU memory pool (``paddle.device.cuda.empty_cache``)
+    after each page. The auto-growth allocator holds freed-but-cached blocks
+    (e.g. 7.6GB held while only 2GB used after one page), so without this the
+    pool fragments and later pages OOM. No-op when paddle/CUDA is unavailable."""
+
     # ------------------------------------------------------------------ #
     # Alignment / matching (§1)                                          #
     # ------------------------------------------------------------------ #
@@ -215,6 +231,18 @@ class OCRCrossCheckConfig:
 
     score_low_default: int = 15
     """LOW score: sparse residual OCR-noise divergence only."""
+
+    # ------------------------------------------------------------------ #
+    # Localization                                                        #
+    # ------------------------------------------------------------------ #
+
+    enable_localization: bool = True
+    """When True, ``analyze_bytes`` records per-page pixel dimensions so the
+    aggregate layer can normalize pixel-space bboxes into canonical [0,1] form."""
+
+    localize_include_ocr_box: bool = True
+    """For MISMATCH divergences, union the OCR box into the localization rect
+    (gives the full disagreeing region).  When False, box only the embedded side."""
 
 
 __all__ = ["OCRCrossCheckConfig"]

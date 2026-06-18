@@ -106,3 +106,16 @@ class FontConfig:
 
     score_low_document_fallback: int = 20
     """LOW score when only document-global baseline evidence is available."""
+
+    # ------------------------------------------------------------------ #
+    # Localization                                                        #
+    # ------------------------------------------------------------------ #
+
+    enable_localization: bool = True
+    """When True, ``analyze_bytes`` captures per-page dimensions so the aggregate
+    layer can normalize glyph bboxes into the canonical [0,1] top-left space."""
+
+    localize_intra_token_use_suspicious_glyphs: bool = True
+    """For ``INTRA_TOKEN_FONT_MIX`` findings, box the union of ``suspicious_bboxes``
+    (precise — points at the inserted glyph(s)) rather than the whole token.
+    Falls back to the token bbox if ``suspicious_bboxes`` is empty."""

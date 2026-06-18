@@ -137,6 +137,18 @@ class InvoiceConfig:
     when its relative error meets or exceeds this (default 5%). The Sejda tamper
     (249.69 -> 24019.69) and the Microsoft 37004.49 row are ~100x, far above."""
 
+    rate_precision_aware: bool = True
+    """For LINE_ITEM (qty * rate = amount) only: many real invoices (e.g. Azure
+    usage bills) print ``rate`` rounded to a fixed number of decimals while the
+    true rate carries more precision, so ``qty * shown_rate`` legitimately misses
+    the stated amount — by a large absolute/relative margin when ``qty`` is big
+    (2434.87 * 0.08 = 194.79 vs stated 204.53; true rate ~0.084). When True the
+    line-item check also accepts an amount that falls inside the interval implied
+    by the operands' printed decimal precision (each operand treated as
+    ``shown ± ½·10^-decimals``). A genuine tamper (operand untouched, amount 100x
+    off) still lands far outside this band and flags. Cannot be verified tighter
+    than the rate's printed precision allows, so this is the correct bound."""
+
     # ------------------------------------------------------------------ #
     # Detector toggles                                                    #
     # ------------------------------------------------------------------ #
@@ -198,3 +210,12 @@ class InvoiceConfig:
 
     score_low_reconciled: int = 10
     """LOW: every evaluated relationship reconciled within tolerance."""
+
+    # ------------------------------------------------------------------ #
+    # Localization                                                        #
+    # ------------------------------------------------------------------ #
+
+    enable_localization: bool = True
+    """When True, ``analyze_bytes`` captures per-page dimensions so the aggregate
+    layer can normalize the output-cell bbox into the canonical [0,1] top-left
+    space.  Set to False to skip the dimension capture (bbox will be None)."""

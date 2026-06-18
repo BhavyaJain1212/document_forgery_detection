@@ -198,6 +198,41 @@ repo-root `CLAUDE.md`. Detailed task history below.
     mismatch; residual 16-orphan mass ≈3.9 capped vs relative floor ≈44.1).
     Full suite: **692 passed, 1 skipped**.
 
+- [x] **GPU-OOM regression: long PDF scored HIGH again (every embedded word a
+  false orphan)** (2026-06-18)
+  - Symptom: `Microsoft-Sample-Invoice_clear.pdf` scored **OCR HIGH 75** with
+    **4504 divergences** — nearly every embedded word flagged EMBEDDED_ONLY
+    ("hidden text"). Diagnostics gave `matched=50` (vs the 2204 baseline above):
+    OCR produced 52 words on the sparse page 0 and **0 on every dense table
+    page**. The user also saw this as "only the first 4–5 pages load".
+  - **Root cause: CUDA out-of-memory, silently swallowed.** PaddleOCR's
+    auto-growth allocator holds freed-but-cached GPU blocks (≈7.6 GB held while
+    only ≈2 GB used after one page on the 8 GB RTX 4060). The next dense page's
+    detector conv can't get ~515 MB → `ResourceExhaustedError`, which
+    `PaddleOCREngine.recognize`'s `except Exception: return []` turns into an
+    empty page. Empty OCR ⇒ every embedded word on that page becomes a false
+    hidden-text orphan ⇒ HIGH. NOT a page cap; all 13 pages rasterise/extract
+    fine. This is environmental (tighter free VRAM than when the LOW-15 baseline
+    above was recorded), so it had silently regressed that acceptance test.
+  - **Fix (in `ocr_engine.py` + 2 config knobs), GPU-memory only — no logic
+    change to alignment/scoring:**
+    - `ocr_max_side_px` (default 2000): downscale the image fed to OCR so the
+      working set stays bounded; **rescale the returned boxes back to the full
+      `render_dpi` raster space** (`box_scale = 1/scale` in `_parse_result`) so
+      the embedded↔pixel correspondence is unchanged. `empty_cache` alone only
+      bought ~4 pages (matching the user's "4–5 pages") — the side cap is what
+      gets all 13 through.
+    - `ocr_empty_cache_between_pages` (default True): `paddle.device.cuda.empty_cache()`
+      in `recognize`'s `finally` (best-effort, no-op without paddle/CUDA).
+  - **Tests:** `tests/test_ocr_integration.py::TestOCRDownscaleAndRescale`
+    (large page downscaled to the cap; boxes rescaled back to raster space;
+    small page untouched; `_empty_cache` is a safe no-op). Unit tests use the
+    deterministic `StubOCREngine`, untouched.
+  - **Verified:** OCR HIGH 75 → **LOW 15** again (matched/agree 2203/2203,
+    0 mismatch, all 13 pages). The real-engine acceptance test
+    `test_microsoft_long_invoice_ocr_crosscheck_not_high` (which had been
+    failing under OOM) now PASSES. Full suite: **821 passed, 1 skipped**.
+
 ## Next — Stage 4 (raster/pixel forensics)
 Stage 3 hands off scanned/image-only PDFs via `routed_to="image_forensics"`.
 Stage 4 would consume `AnalysisContext.rasterized_pages()` + run ELA /

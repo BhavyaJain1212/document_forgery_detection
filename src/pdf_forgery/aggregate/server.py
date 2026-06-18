@@ -21,6 +21,7 @@ from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
+    Response,
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
@@ -173,6 +174,34 @@ def get_advisory(job_id: str) -> StreamingResponse:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/v1/jobs/{job_id}/findings/{finding_id}/overlay.png")
+def get_finding_overlay(job_id: str, finding_id: str) -> Response:
+    """GATED EVIDENCE: the annotated page PNG for one located finding.
+
+    Returns real document pixels (PHI), distinct from the scrubbed descriptor
+    endpoints. 404 when the finding is unknown, not localised, or rendering is
+    unavailable.
+    """
+    png = api.get_finding_overlay(job_id, finding_id)
+    if png is None:
+        raise HTTPException(status_code=404, detail="No overlay for this finding.")
+    return Response(content=png, media_type="image/png")
+
+
+@app.get("/v1/jobs/{job_id}/pages/{page}/image.png")
+def get_page_image(job_id: str, page: int) -> Response:
+    """GATED EVIDENCE: a plain page image for the document viewer.
+
+    Returns document pixels (PHI); the frontend overlays bounding boxes from the
+    scrubbed ``bbox`` coordinates. 404 when the page is unknown or rendering is
+    unavailable.
+    """
+    png = api.get_page_image(job_id, page)
+    if png is None:
+        raise HTTPException(status_code=404, detail="No page image available.")
+    return Response(content=png, media_type="image/png")
 
 
 # ---------------------------------------------------------------------------

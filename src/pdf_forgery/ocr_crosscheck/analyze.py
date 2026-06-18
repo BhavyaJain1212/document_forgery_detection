@@ -181,6 +181,7 @@ def _run(
     }
     page_embedded: list[list[WordBox]] = []
     page_ocr: list[list[WordBox]] = []
+    page_dims_px_list: list[tuple[float, float]] = []
 
     n_pages = min(len(raster_pages), len(page_layouts))
 
@@ -189,6 +190,8 @@ def _run(
         scale = cfg.render_dpi / 72.0
         rot = page_rotations[pi] if pi < len(page_rotations) else 0
         pw, ph = _page_px_dims(page_layouts[pi], scale, rot)
+        if cfg.enable_localization:
+            page_dims_px_list.append((pw, ph))
 
         emb_raw = [w for w in all_embedded_raw if w.page_index == pi]
         emb_page, off_dropped = filter_offpage_embedded(
@@ -240,6 +243,7 @@ def _run(
                 f"scanned/text-sparse: {len(all_embedded_flat)} embedded, "
                 f"{len(all_ocr_flat)} OCR words — routed to {cfg.image_forensics_route}",
             ),
+            page_dims_px=tuple(page_dims_px_list),
         )
 
     # ------------------------------------------------------------------ #
@@ -280,6 +284,7 @@ def _run(
         provenance=prov,
         diagnostics=dict(diag),
         notes=(),
+        page_dims_px=tuple(page_dims_px_list),
     )
 
 

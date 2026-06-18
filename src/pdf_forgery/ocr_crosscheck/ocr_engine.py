@@ -120,11 +120,26 @@ class PaddleOCREngine:
             from PIL import Image
             from io import BytesIO
 
-            img = np.array(Image.open(BytesIO(page_png)).convert("RGB"))
+            pil = Image.open(BytesIO(page_png)).convert("RGB")
+            # Cap the OCR input size so PaddleOCR's GPU working set stays
+            # bounded (a full 300-DPI page otherwise OOMs the allocator after
+            # the first dense page; see ocr_max_side_px). We OCR the downscaled
+            # image but rescale the returned boxes back to the original raster
+            # space (1/scale) so the embedded↔pixel alignment is unaffected.
+            scale = 1.0
+            max_side = self._config.ocr_max_side_px
+            if max_side and max(pil.size) > max_side:
+                scale = max_side / max(pil.size)
+                new_size = (max(1, round(pil.width * scale)),
+                            max(1, round(pil.height * scale)))
+                pil = pil.resize(new_size)
+            img = np.array(pil)
             raw = ocr.predict(img)
-            return self._parse_result(raw, dpi)
+            return self._parse_result(raw, dpi, box_scale=1.0 / scale)
         except Exception:
             return []
+        finally:
+            self._empty_cache()
 
     def provenance(self) -> RenderProvenance:
         """Report engine identity for the reproducibility record."""
@@ -178,14 +193,31 @@ class PaddleOCREngine:
         except Exception:
             return None
 
-    def _parse_result(self, raw: object, dpi: int) -> list[WordBox]:
+    def _empty_cache(self) -> None:
+        """Release PaddlePaddle's GPU memory pool between pages (best-effort).
+
+        The auto-growth allocator caches freed blocks, so without this the pool
+        fragments and dense later pages throw CUDA OOM. No-op when paddle/CUDA
+        is unavailable or the toggle is off."""
+        if not self._config.ocr_empty_cache_between_pages:
+            return
+        try:
+            import paddle
+            paddle.device.cuda.empty_cache()
+        except Exception:
+            pass
+
+    def _parse_result(
+        self, raw: object, dpi: int, *, box_scale: float = 1.0
+    ) -> list[WordBox]:
         """Parse PaddleOCR's result list → filtered list of WordBox.
 
         ``ocr.predict(img)`` returns a list (one per input image) of
         ``OCRResult`` (dict-like), each holding parallel arrays
         ``rec_texts[i]`` / ``rec_scores[i]`` / ``rec_polys[i]`` (4 ``[x, y]``
         points). We feed one image at a time, so ``raw`` has exactly one
-        result.
+        result. ``box_scale`` maps detection coordinates from the (possibly
+        downscaled) OCR input back to the full render_dpi raster space.
         """
         if not raw:
             return []
@@ -207,6 +239,9 @@ class PaddleOCREngine:
             if not text or quad is None or conf < floor:
                 continue
             bbox = quad_to_bbox(quad)
+            if box_scale != 1.0:
+                bbox = (bbox[0] * box_scale, bbox[1] * box_scale,
+                        bbox[2] * box_scale, bbox[3] * box_scale)
             words.append(
                 WordBox(
                     text=str(text),

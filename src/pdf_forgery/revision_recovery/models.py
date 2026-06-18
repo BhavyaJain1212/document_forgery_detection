@@ -399,6 +399,43 @@ class ScoringResult:
 
 
 @dataclass(frozen=True)
+class BoxPt:
+    """One bounding box in pdfplumber page space (PDF points, top-left origin).
+
+    ``x0`` / ``x1`` measure from the left page edge (increasing rightward);
+    ``top`` / ``bottom`` measure from the top of the page (increasing downward).
+    This is the native space ``pdfplumber.Page.extract_words`` returns, already in
+    the page's visual (rotation-applied) orientation.
+    """
+
+    x0: float
+    top: float
+    x1: float
+    bottom: float
+
+
+@dataclass(frozen=True)
+class FindingLocation:
+    """Where a finding's added / changed text sits on its page.
+
+    ``boxes`` are per-word highlight rectangles (pdfplumber space — see
+    :class:`BoxPt`).  ``page_width_pt`` / ``page_height_pt`` are that page's
+    visual dimensions in points, so a consumer can normalise the boxes to
+    ``[0, 1]`` page-relative space without re-opening the file.  ``page_rotation``
+    is the page ``/Rotate`` value (0/90/180/270), recorded for diagnostics.
+
+    Attached post-scoring by :mod:`extract.locate`.  A finding that could not be
+    localised carries ``location=None`` (recorded via a note, never silently
+    dropped); a populated ``FindingLocation`` always has at least one box.
+    """
+
+    boxes: tuple[BoxPt, ...]
+    page_width_pt: float
+    page_height_pt: float
+    page_rotation: int = 0
+
+
+@dataclass(frozen=True)
 class Finding:
     """One flagged change between two consecutive revisions, with evidence.
 
@@ -434,6 +471,11 @@ class Finding:
 
     summary: str
     """One-line human description of the finding."""
+
+    location: FindingLocation | None = None
+    """Geometry of the added / changed text on the page (pdfplumber space), or
+    ``None`` when the finding was not localised.  Attached post-scoring by
+    :mod:`extract.locate`; never affects the tier or score."""
 
     @property
     def before_text(self) -> str:

@@ -184,7 +184,7 @@ def fuse(
             reasons, contributing, stage_tiers, notes,
         )
 
-    # ---- 4. No substantive signal at all (all INCONCLUSIVE). -------------- #
+    # ---- 4. No substantive signal at all (all substantive INCONCLUSIVE). -- #
     if corrob_fires:
         # Provenance alone -> overall clean (corroborator never originates).
         reasons = [
@@ -196,7 +196,27 @@ def fuse(
             tuple(r.stage for r in corrob_fires), stage_tiers, notes,
         )
 
-    # Every stage was INCONCLUSIVE (or only benign corroborator LOW).
+    # No substantive stage applied, but a stage still read the file and
+    # AFFIRMATIVELY cleared it (e.g. provenance LOW = no metadata anomalies).
+    # That is a successful analysis with no positive signal anywhere -> the
+    # file is clean, not "couldn't assess". INCONCLUSIVE is reserved for files
+    # no method could actually read (encrypted/corrupt/empty), where nothing
+    # affirmatively clears them. A corroborator may clear toward clean even
+    # though it can never ORIGINATE suspicion.
+    cleared = [r for r in ok if r.tier is ConfidenceTier.LOW]
+    if cleared:
+        reasons = [
+            "no detector found evidence of an edit, and the file was analyzed "
+            f"successfully — {_join_stages(cleared)} affirmatively cleared it; "
+            "the other methods do not apply to this document — treated as clean"
+        ]
+        return _assess(
+            ConfidenceTier.LOW, _max_score(cleared, cfg.default_low_score),
+            reasons, tuple(r.stage for r in cleared), stage_tiers, notes,
+        )
+
+    # Every stage was INCONCLUSIVE and nothing cleared the file -> truly
+    # unassessable by this set of methods (e.g. encrypted/corrupt).
     reasons = ["every stage was inconclusive — this set of methods could not assess the file"]
     return FusedAssessment(
         tier=ConfidenceTier.INCONCLUSIVE,

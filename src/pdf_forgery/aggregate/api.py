@@ -171,6 +171,28 @@ def _word_chunks(text: str) -> Iterator[str]:
         yield word if index == len(words) - 1 else word + " "
 
 
+def get_finding_overlay(job_id: str, finding_id: str) -> bytes | None:
+    """``GET /v1/jobs/{job_id}/findings/{finding_id}/overlay.png`` (GATED EVIDENCE).
+
+    Bake the annotated page PNG for one located finding. Unlike the status /
+    advisory endpoints, this returns real document pixels (PHI) — it is the gated
+    evidence path, not part of the scrubbed descriptor view. ``None`` when the
+    finding is unknown / not localised / rendering unavailable (server -> 404).
+    """
+    return get_manager().render_overlay(job_id, finding_id)
+
+
+def get_page_image(job_id: str, page_index: int) -> bytes | None:
+    """``GET /v1/jobs/{job_id}/pages/{page}/image.png`` (GATED EVIDENCE).
+
+    A plain page image for the document viewer; the frontend overlays the
+    bounding boxes itself from the (already-scrubbed) ``bbox`` coordinates. Real
+    document pixels (PHI), gated like :func:`get_finding_overlay`. ``None`` ->
+    server 404.
+    """
+    return get_manager().render_page(job_id, page_index)
+
+
 __all__ = [
     "JobSubmission",
     "StageProgress",
@@ -181,4 +203,6 @@ __all__ = [
     "submit_document",
     "get_job_status",
     "stream_advisory",
+    "get_finding_overlay",
+    "get_page_image",
 ]

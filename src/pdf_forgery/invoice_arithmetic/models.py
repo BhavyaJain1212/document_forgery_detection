@@ -304,5 +304,11 @@ class InvoiceReport:
     notes: tuple[str, ...] = ()
     error: str | None = None
     raw_size: int = 0
+    page_dims: tuple[tuple[float, float], ...] = ()
+    """Per-page ``(width_pt, height_pt)`` in PDF user space (points), indexed by
+    ``page_index``.  Populated by ``analyze_bytes`` when layouts are available;
+    used by the aggregate layer to normalize native bboxes into canonical form."""
+    page_rotations: tuple[int, ...] = ()
+    """Per-page ``/Rotate`` values (0/90/180/270), indexed by ``page_index``."""
     _tables: tuple[Table, ...] = field(default=(), repr=False, compare=False)
     """Reconstructed tables retained for inspection/tests."""

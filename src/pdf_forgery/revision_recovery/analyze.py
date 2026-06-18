@@ -23,6 +23,7 @@ from .detect import detect
 from .diff.objectdiff import diff_objects
 from .diff.textdiff import diff_normalized_pages, diff_text
 from .extract.glyph_text import glyph_page_texts, looks_incomplete
+from .extract.locate import locate_findings
 from .extract.normalize import normalize
 from .extract.text import extract_text_per_page
 from .models import (
@@ -271,7 +272,12 @@ def analyze_bytes(
     scoring = score(text_changes, object_diffs, recon, cfg)
     findings = _build_findings(text_changes, object_diffs)
 
-    notes = detection.notes + recon.notes + tuple(fallback_notes)
+    # Localise added / changed text to page bounding boxes (advisory geometry;
+    # never affects the tier/score). Diagnostics are collected in locate_notes.
+    locate_notes: list[str] = []
+    findings = locate_findings(findings, recon, cfg, locate_notes)
+
+    notes = detection.notes + recon.notes + tuple(fallback_notes) + tuple(locate_notes)
     for tc in text_changes:
         notes += tc.notes
     for od in object_diffs:

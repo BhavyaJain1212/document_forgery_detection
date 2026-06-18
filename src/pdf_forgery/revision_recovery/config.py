@@ -160,3 +160,27 @@ class Config:
     fallback_incomplete_ratio: float = 0.5
     """Primary extraction is deemed incomplete when its non-space character count
     is below this fraction of the glyph path's count for the same revision."""
+
+    # ------------------------------------------------------------------ #
+    # Localization (bounding boxes for added / changed text)              #
+    # ------------------------------------------------------------------ #
+
+    enable_localization: bool = True
+    """When True, after scoring, each text-bearing finding is localised to word
+    bounding boxes on its page via a cross-revision word diff (``extract.locate``).
+    Purely additive geometry — never affects the tier or score. Set False to skip
+    the extra pdfplumber pass entirely."""
+
+    locate_position_tolerance_pt: float = 2.0
+    """Tie-breaker tolerance (PDF points) used ONLY to choose among multiple
+    same-text word occurrences when the text multiset diff says some-but-not-all
+    are new. It is NOT the primary "added" gate (that is the text multiset diff),
+    so reflow of unchanged text cannot create false "added" boxes."""
+
+    locate_word_x_tolerance: float | None = None
+    """Optional override for pdfplumber ``extract_words(x_tolerance=...)``; ``None``
+    uses pdfplumber's default word-grouping behaviour."""
+
+    locate_word_y_tolerance: float | None = None
+    """Optional override for pdfplumber ``extract_words(y_tolerance=...)``; ``None``
+    uses pdfplumber's default word-grouping behaviour."""

@@ -311,3 +311,83 @@ class TestDiagnostics:
         assert report.diagnostics["matched"] == 18
         assert report.diagnostics["agree"] == 18
         assert report.diagnostics.get("mismatch", 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# GPU-OOM mitigation: downscale large OCR input + rescale boxes back, and
+# release the GPU memory pool between pages. The cap keeps PaddleOCR's working
+# set bounded so dense later pages no longer OOM (which silently returned 0
+# words → every embedded word became a false hidden-text orphan).
+# ---------------------------------------------------------------------------
+
+class _FakeOCRPredictor:
+    """Stands in for a PaddleOCR object: records the image it was given and
+    returns one detection at a fixed coordinate in the (downscaled) input space."""
+
+    def __init__(self, quad):
+        self._quad = quad
+        self.seen_shapes: list[tuple] = []
+
+    def predict(self, img):
+        self.seen_shapes.append(tuple(img.shape[:2]))  # (height, width)
+        return [{"rec_texts": ["X"], "rec_scores": [0.99], "rec_polys": [self._quad]}]
+
+
+def _png_bytes(width: int, height: int) -> bytes:
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (255, 255, 255)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class TestOCRDownscaleAndRescale:
+    def test_large_page_is_downscaled_before_ocr(self):
+        from pdf_forgery.ocr_crosscheck.config import OCRCrossCheckConfig
+
+        cfg = OCRCrossCheckConfig(ocr_max_side_px=1000)
+        engine = PaddleOCREngine(cfg)
+        fake = _FakeOCRPredictor(quad=[[10, 10], [20, 10], [20, 20], [10, 20]])
+        engine._ocr = fake  # bypass lazy PaddleOCR init
+
+        engine.recognize(_png_bytes(3300, 2550), dpi=300)
+
+        # Longest side capped to 1000: 3300 -> 1000 (scale 0.30303), 2550 -> 773.
+        h, w = fake.seen_shapes[0]
+        assert max(h, w) == 1000
+        assert w == 1000 and h == 773
+
+    def test_boxes_rescaled_back_to_full_raster_space(self):
+        from pdf_forgery.ocr_crosscheck.config import OCRCrossCheckConfig
+
+        cfg = OCRCrossCheckConfig(ocr_max_side_px=1000)
+        engine = PaddleOCREngine(cfg)
+        # Detection at (10,10)-(20,20) in the downscaled (scale=0.30303) image.
+        fake = _FakeOCRPredictor(quad=[[10, 10], [20, 10], [20, 20], [10, 20]])
+        engine._ocr = fake
+
+        words = engine.recognize(_png_bytes(3300, 2550), dpi=300)
+        assert len(words) == 1
+        # box_scale = 1/scale = 3.3 → (33, 33, 66, 66), within rounding.
+        x0, y0, x1, y1 = words[0].bbox
+        assert abs(x0 - 33.0) < 1.0 and abs(y0 - 33.0) < 1.0
+        assert abs(x1 - 66.0) < 1.0 and abs(y1 - 66.0) < 1.0
+
+    def test_small_page_not_downscaled_boxes_unchanged(self):
+        from pdf_forgery.ocr_crosscheck.config import OCRCrossCheckConfig
+
+        cfg = OCRCrossCheckConfig(ocr_max_side_px=2000)
+        engine = PaddleOCREngine(cfg)
+        fake = _FakeOCRPredictor(quad=[[10, 10], [20, 10], [20, 20], [10, 20]])
+        engine._ocr = fake
+
+        words = engine.recognize(_png_bytes(800, 600), dpi=300)
+        assert fake.seen_shapes[0] == (600, 800)  # untouched
+        assert words[0].bbox == (10.0, 10.0, 20.0, 20.0)
+
+    def test_empty_cache_toggle_is_a_safe_noop(self):
+        # _empty_cache must never raise even when paddle/CUDA is absent.
+        from pdf_forgery.ocr_crosscheck.config import OCRCrossCheckConfig
+
+        for flag in (True, False):
+            engine = PaddleOCREngine(OCRCrossCheckConfig(ocr_empty_cache_between_pages=flag))
+            engine._empty_cache()  # must not raise

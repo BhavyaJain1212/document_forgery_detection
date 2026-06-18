@@ -200,3 +200,107 @@ def test_server_unknown_job_404(stub_pipeline):
 
     client = TestClient(server.app)
     assert client.get("/v1/jobs/missing").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Gated evidence: the annotated-overlay PNG (real revision_recovery stage)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def real_revision_pipeline(monkeypatch):
+    """Run ONLY the real revision_recovery stage, so findings carry geometry."""
+    from pdf_forgery.revision_recovery import RevisionRecoveryStage
+
+    monkeypatch.setattr(jobs, "build_default_stages", lambda: [RevisionRecoveryStage()])
+    api.configure_manager(AggregateConfig())
+    yield
+
+
+def _forged_amount_pdf() -> bytes:
+    import sys
+    from pathlib import Path
+
+    scripts = str(Path(__file__).resolve().parent.parent / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import make_localization_fixtures as F
+
+    return F.amount_pair()[1]
+
+
+def _await_done(client, job_id: str) -> dict:
+    status: dict = {}
+    for _ in range(400):
+        status = client.get(f"/v1/jobs/{job_id}").json()
+        if status["state"] in ("done", "error"):
+            return status
+        time.sleep(0.01)
+    raise AssertionError("job did not finish in time")
+
+
+def test_bbox_crosses_boundary_but_document_pixels_are_gated(real_revision_pipeline):
+    """The scrubbed descriptor carries the bbox (coordinates only); the document
+    pixels (the annotated PNG) come ONLY from the separate gated endpoint."""
+    pytest.importorskip("pypdfium2")
+    from fastapi.testclient import TestClient
+
+    client = TestClient(server.app)
+    res = client.post(
+        "/v1/documents",
+        files={"file": ("claim.pdf", _forged_amount_pdf(), "application/pdf")},
+    )
+    assert res.status_code == 202
+    job_id = res.json()["job_id"]
+    status = _await_done(client, job_id)
+    assert status["state"] == "done"
+
+    boxed = [f for f in status["result"]["findings"] if f["bbox"] is not None]
+    assert boxed, "expected a localized revision_recovery finding"
+    # No document text crosses the scrub boundary, even though the bbox does.
+    assert "50,000" not in json.dumps(status["result"])
+
+    finding_id = boxed[0]["finding_id"]
+    png = client.get(f"/v1/jobs/{job_id}/findings/{finding_id}/overlay.png")
+    assert png.status_code == 200
+    assert png.headers["content-type"] == "image/png"
+    assert png.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_gated_page_image_serves_png(real_revision_pipeline):
+    """The document viewer's plain page image (boxes drawn client-side from bbox)."""
+    pytest.importorskip("pypdfium2")
+    from fastapi.testclient import TestClient
+
+    client = TestClient(server.app)
+    job_id = client.post(
+        "/v1/documents",
+        files={"file": ("c.pdf", _forged_amount_pdf(), "application/pdf")},
+    ).json()["job_id"]
+    _await_done(client, job_id)
+
+    res = client.get(f"/v1/jobs/{job_id}/pages/0/image.png")
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "image/png"
+    assert res.content[:8] == b"\x89PNG\r\n\x1a\n"
+    # Unknown job -> 404.
+    assert client.get("/v1/jobs/missing/pages/0/image.png").status_code == 404
+
+
+def test_gated_overlay_unknown_finding_and_job_404(real_revision_pipeline):
+    from fastapi.testclient import TestClient
+
+    client = TestClient(server.app)
+    job_id = client.post(
+        "/v1/documents",
+        files={"file": ("c.pdf", _forged_amount_pdf(), "application/pdf")},
+    ).json()["job_id"]
+    _await_done(client, job_id)
+
+    assert (
+        client.get(f"/v1/jobs/{job_id}/findings/revision_recovery-999/overlay.png").status_code
+        == 404
+    )
+    assert (
+        client.get("/v1/jobs/missing/findings/revision_recovery-0/overlay.png").status_code
+        == 404
+    )

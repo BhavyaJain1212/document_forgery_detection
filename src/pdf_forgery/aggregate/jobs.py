@@ -77,6 +77,7 @@ class Job:
     state: str = QUEUED
     # ordered per-stage progress: stage name -> queued/running/done/error
     stage_states: dict[str, str] = field(default_factory=dict)
+    pdf_bytes: bytes | None = None  # server-side only (PHI); for the gated evidence view
     aggregate_result: AggregateResult | None = None  # server-side, behind PHI boundary
     advisory_input: AdvisoryInput | None = None  # scrubbed; safe to serve
     advisory_output: AdvisoryOutput | None = None  # cached after first SSE generation
@@ -102,6 +103,7 @@ class JobManager:
             job_id=uuid.uuid4().hex,
             filename=filename,
             stage_states={name: QUEUED for name in STAGE_ORDER},
+            pdf_bytes=pdf_bytes,
         )
         with self._lock:
             self._jobs[job.job_id] = job
@@ -131,6 +133,59 @@ class JobManager:
                     job.advisory_input, config=self._config
                 )
             return job.advisory_output
+
+    def render_page(self, job_id: str, page_index: int) -> bytes | None:
+        """Render a plain page image (no boxes) for the document viewer (PHI / gated).
+
+        The frontend draws the bounding boxes itself as a CSS overlay using the
+        normalized ``bbox`` that already crosses the scrub boundary; this endpoint
+        supplies only the page pixels. ``None`` when the job/page is unknown or
+        rendering is unavailable.
+        """
+        from .overlay import render_page_overlay
+
+        job = self.get(job_id)
+        if job is None or job.pdf_bytes is None:
+            return None
+        return render_page_overlay(job.pdf_bytes, page_index, [], config=self._config)
+
+    def render_overlay(self, job_id: str, finding_id: str) -> bytes | None:
+        """Bake the annotated page PNG for one located finding (PHI / gated).
+
+        Returns annotated PNG bytes, or ``None`` when the job/finding is unknown,
+        the finding is not localised, or rendering is unavailable. The PNG holds
+        real document pixels, so this is the gated evidence path — it is NOT part
+        of the scrubbed :class:`AdvisoryInput` the status endpoint serves.
+        """
+        from .overlay import render_page_overlay
+
+        job = self.get(job_id)
+        if job is None or job.pdf_bytes is None or job.aggregate_result is None:
+            return None
+        # finding_id is "{stage}-{index}"; only revision_recovery is localised today.
+        stage, _, index_str = finding_id.rpartition("-")
+        if stage != "revision_recovery":
+            return None
+        try:
+            index = int(index_str)
+        except ValueError:
+            return None
+
+        for result in job.aggregate_result.stage_results:
+            if result.stage != "revision_recovery":
+                continue
+            rich = getattr(result.payload, "findings", None)
+            if not rich or index < 0 or index >= len(rich):
+                return None
+            rf = rich[index]
+            location = getattr(rf, "location", None)
+            if location is None or not location.boxes or rf.page_index is None:
+                return None
+            boxes_pt = [(b.x0, b.top, b.x1, b.bottom) for b in location.boxes]
+            return render_page_overlay(
+                job.pdf_bytes, rf.page_index, boxes_pt, config=self._config
+            )
+        return None
 
     # -- internals ----------------------------------------------------------
 

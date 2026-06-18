@@ -641,6 +641,21 @@ button {
   color: var(--ink-2);
 }
 
+/* Markdown rendering inside the advisory summary */
+.advisory__body p { margin: 0; }
+.advisory__body p + p { margin-top: var(--s-4); }
+.advisory__body ul {
+  margin: var(--s-3) 0 var(--s-3) var(--s-5);
+  padding: 0;
+  list-style: disc;
+}
+.advisory__body li {
+  margin-bottom: var(--s-2);
+  line-height: var(--lh-snug);
+}
+.advisory__body li:last-child { margin-bottom: 0; }
+.advisory__body strong { font-weight: 600; color: var(--ink); }
+
 .advisory__meta {
   margin-top: var(--s-5);
   font-size: var(--fs-xs);
@@ -817,34 +832,40 @@ button {
   line-height: var(--lh-snug);
 }
 
-.expl {
-  margin: var(--s-3) 0 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-}
-
-.expl__row {
-  display: flex;
+.expl-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
   gap: var(--s-3);
-  font-size: var(--fs-sm);
-  line-height: var(--lh-snug);
+  margin-top: var(--s-3);
 }
 
-.expl__label {
-  flex: none;
-  min-width: 9ch;
-  font-weight: 600;
+@media (max-width: 600px) {
+  .expl-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+.expl-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--s-3) var(--s-4);
+}
+
+.expl-card__label {
   font-size: var(--fs-xs);
-  text-transform: uppercase;
+  font-weight: 600;
   letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--ink-3);
-  padding-top: 0.15em;
+  margin-bottom: var(--s-2);
 }
 
-.expl dd {
-  margin: 0;
+.expl-card__body {
+  font-size: var(--fs-sm);
   color: var(--ink);
+  line-height: var(--lh-snug);
+  margin: 0;
 }
 
 /* =====================================================================
@@ -875,6 +896,186 @@ button {
   color: var(--ink-2);
   max-width: 44ch;
   margin: 0 auto var(--s-8);
+}
+
+/* =====================================================================
+   Result — two-column layout (analysis left, document right)
+   ===================================================================== */
+
+/* The result view breaks out to a wider canvas; other views stay narrow. */
+body.result-wide .main,
+body.result-wide .app-header__inner {
+  max-width: 1160px;
+}
+
+.result__split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: var(--s-8);
+  align-items: start;
+}
+
+.result__left {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-8);
+  min-width: 0;
+}
+
+@media (max-width: 980px) {
+  .result__split {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---- Document viewer pane ---- */
+.docpane {
+  position: sticky;
+  top: calc(var(--s-8) + var(--s-4));
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - var(--s-12));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+@media (max-width: 980px) {
+  .docpane {
+    position: static;
+    max-height: none;
+  }
+}
+
+.docpane__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: var(--s-5) var(--s-5) var(--s-4);
+  border-bottom: 1px solid var(--border);
+}
+.docpane__head .section-label {
+  margin-bottom: 0;
+}
+
+.docpane__legend {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+}
+.docpane__swatch {
+  width: 15px;
+  height: 11px;
+  border-radius: 3px;
+  border: 1.5px solid var(--high-solid);
+  background: color-mix(in srgb, var(--high-solid) 14%, transparent);
+}
+
+.docpane__scroll {
+  overflow-y: auto;
+  padding: var(--s-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-6);
+}
+
+.docpage {
+  margin: 0;
+}
+.docpage__frame {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+  box-shadow: var(--shadow-sm);
+}
+.docpage__img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.docpage__boxes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.docpage__cap {
+  margin-top: var(--s-2);
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  text-align: center;
+}
+.docpage__err {
+  padding: var(--s-10) var(--s-4);
+  text-align: center;
+  font-size: var(--fs-sm);
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+
+/* ---- A single bounding box (tier-colored, positioned in %) ---- */
+.docbox {
+  position: absolute;
+  border: 2px solid var(--tier);
+  background: color-mix(in srgb, var(--tier) 13%, transparent);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.65);
+  transition: background 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+.docbox.is-active {
+  background: color-mix(in srgb, var(--tier) 26%, transparent);
+  box-shadow: 0 0 0 2px var(--tier),
+    0 0 0 5px color-mix(in srgb, var(--tier) 28%, transparent);
+}
+
+.finding.is-locatable {
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: background 0.15s var(--ease);
+}
+.finding.is-locatable:hover {
+  background: var(--surface-2);
+}
+
+/* ---- Empty state (no localisable findings) ---- */
+.docpane__empty {
+  padding: var(--s-12) var(--s-6);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-3);
+}
+.docpane__empty-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.docpane__empty-icon svg {
+  width: 22px;
+  height: 22px;
+}
+.docpane__empty-title {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.docpane__empty-sub {
+  font-size: var(--fs-sm);
+  color: var(--ink-3);
+  max-width: 38ch;
 }
 
 /* utility */

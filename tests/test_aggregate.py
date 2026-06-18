@@ -27,7 +27,12 @@ from pdf_forgery.fusion import fuse
 from pdf_forgery.invoice_arithmetic.models import RelationshipKind
 from pdf_forgery.ocr_crosscheck.models import DivergenceType
 from pdf_forgery.provenance_metadata.models import ProvenanceFindingKind
-from pdf_forgery.revision_recovery.models import ObjectChangeClass
+from pdf_forgery.revision_recovery.models import (
+    BoxPt,
+    Finding as RRFinding,
+    FindingLocation,
+    ObjectChangeClass,
+)
 
 REV = "revision_recovery"
 FONT = "font_forensics"
@@ -98,7 +103,8 @@ def test_flatten_assigns_stable_ids_and_carries_tier():
     assert agg.findings[0].tier is ConfidenceTier.HIGH
     assert agg.findings[1].tier is ConfidenceTier.MEDIUM
     assert all(f.score is None for f in agg.findings)
-    assert all(f.bbox is None for f in agg.findings)  # carried in the contract; not wired yet
+    # No payload/location on these synthetic findings -> bbox stays None.
+    assert all(f.bbox is None for f in agg.findings)
 
 
 def test_flatten_token_class_amount_passthrough():
@@ -117,6 +123,95 @@ def test_flatten_token_class_none_when_no_text():
     f = _finding(PROV, before=None, after=None, high_value=None)
     agg = aggregate([_stage_result(PROV, ConfidenceTier.LOW, 10, findings=[f])])
     assert agg.findings[0].token_class is None
+
+
+# --------------------------------------------------------------------------- #
+# _finding_bbox: revision_recovery location -> normalized [0,1] union BBox,
+# with a positional-integrity guard (page + object_ids must match the rich
+# finding before the positional index is trusted).
+# --------------------------------------------------------------------------- #
+
+def _rr_rich(page=2, object_ids=("4 0",), location=None) -> RRFinding:
+    return RRFinding(
+        from_revision=0, to_revision=1, page_index=page, object_ids=object_ids,
+        object_classes=(ObjectChangeClass.CONTENT,), token_changes=(),
+        is_high_value=False, high_value_kind=None, summary="x", location=location,
+    )
+
+
+def test_finding_bbox_normalizes_location_union():
+    loc = FindingLocation(
+        boxes=(
+            BoxPt(x0=120, top=100, x1=170, bottom=116),
+            BoxPt(x0=72, top=98, x1=110, bottom=116),
+        ),
+        page_width_pt=612.0, page_height_pt=792.0, page_rotation=0,
+    )
+    payload = SimpleNamespace(findings=[_rr_rich(location=loc)])
+    core = _finding(REV, page=2, object_ids=("4 0",))
+    agg = aggregate([_stage_result(REV, ConfidenceTier.HIGH, 90, findings=[core], payload=payload)])
+    bb = agg.findings[0].bbox
+    assert bb is not None
+    assert bb.x0 == pytest.approx(72 / 612)
+    assert bb.y0 == pytest.approx(98 / 792)
+    assert bb.x1 == pytest.approx(170 / 612)
+    assert bb.y1 == pytest.approx(116 / 792)
+
+
+def test_finding_bbox_none_without_location():
+    payload = SimpleNamespace(findings=[_rr_rich(location=None)])
+    core = _finding(REV, page=2, object_ids=("4 0",))
+    agg = aggregate([_stage_result(REV, ConfidenceTier.HIGH, 90, findings=[core], payload=payload)])
+    assert agg.findings[0].bbox is None
+
+
+def test_finding_bbox_guard_rejects_page_mismatch():
+    loc = FindingLocation(
+        boxes=(BoxPt(x0=10, top=10, x1=20, bottom=20),),
+        page_width_pt=612.0, page_height_pt=792.0,
+    )
+    payload = SimpleNamespace(findings=[_rr_rich(page=2, location=loc)])
+    core = _finding(REV, page=5, object_ids=("4 0",))  # page disagrees with rich
+    agg = aggregate([_stage_result(REV, ConfidenceTier.HIGH, 90, findings=[core], payload=payload)])
+    assert agg.findings[0].bbox is None
+
+
+def test_finding_bbox_guard_rejects_object_id_mismatch():
+    loc = FindingLocation(
+        boxes=(BoxPt(x0=10, top=10, x1=20, bottom=20),),
+        page_width_pt=612.0, page_height_pt=792.0,
+    )
+    payload = SimpleNamespace(findings=[_rr_rich(object_ids=("4 0",), location=loc)])
+    core = _finding(REV, page=2, object_ids=("9 0",))  # object id disagrees
+    agg = aggregate([_stage_result(REV, ConfidenceTier.HIGH, 90, findings=[core], payload=payload)])
+    assert agg.findings[0].bbox is None
+
+
+def test_finding_bbox_none_for_non_revision_recovery_stage():
+    agg = aggregate([_stage_result(PROV, ConfidenceTier.LOW, 10, findings=[_finding(PROV)])])
+    assert agg.findings[0].bbox is None
+
+
+def test_finding_bbox_end_to_end_amount_edit():
+    import sys
+    from pathlib import Path
+
+    scripts = str(Path(__file__).resolve().parent.parent / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import make_localization_fixtures as F
+
+    from pdf_forgery.revision_recovery.adapter import report_to_stage_result
+    from pdf_forgery.revision_recovery.analyze import analyze_bytes
+
+    _, forged = F.amount_pair()
+    stage_result = report_to_stage_result(analyze_bytes(forged, "amount.pdf"))
+    agg = aggregate([stage_result])
+    boxed = [f for f in agg.findings if f.bbox is not None]
+    assert len(boxed) == 1
+    bb = boxed[0].bbox
+    assert 0 <= bb.x0 < bb.x1 <= 1
+    assert 0 <= bb.y0 < bb.y1 <= 1
 
 
 # --------------------------------------------------------------------------- #
@@ -447,3 +542,75 @@ def test_stub_advisory_uses_glossary_language():
     # The glossary entry for embedded_only mentions "text layer" — not just the type name.
     assert "text layer" in expl.what_we_found.lower() or "text layer" in expl.label.lower() or "text" in expl.what_we_found.lower()
     assert expl.what_to_check  # non-empty reviewer action
+
+
+# --------------------------------------------------------------------------- #
+# Glossary coverage — every emitted type token must have a real entry
+# --------------------------------------------------------------------------- #
+
+def test_glossary_covers_all_emitted_type_tokens():
+    """Every type token _finding_type() can produce must have a non-generic glossary entry."""
+    from pdf_forgery.aggregate.aggregate import _OBJECT_CLASS_TYPE
+    from pdf_forgery.aggregate.glossary import _GENERIC, get_glossary_entry
+
+    all_tokens: set[str] = set()
+
+    # ocr_crosscheck: DivergenceType minus agree
+    for dt in DivergenceType:
+        if dt.value != "agree":
+            all_tokens.add(dt.value)
+
+    # revision_recovery: _OBJECT_CLASS_TYPE tokens
+    for _, type_token in _OBJECT_CLASS_TYPE:
+        all_tokens.add(type_token)
+
+    # font_forensics: FontFindingKind (enum aliases share a value; deduped by set)
+    for fk in FontFindingKind:
+        all_tokens.add(fk.value)
+
+    # invoice_arithmetic: RelationshipKind
+    for rk in RelationshipKind:
+        all_tokens.add(rk.value)
+
+    # provenance_metadata: ProvenanceFindingKind
+    for pk in ProvenanceFindingKind:
+        all_tokens.add(pk.value)
+
+    missing = sorted(t for t in all_tokens if get_glossary_entry(t) is _GENERIC)
+    assert missing == [], f"These tokens fall to the generic glossary entry: {missing}"
+
+
+# --------------------------------------------------------------------------- #
+# Markdown summary structure
+# --------------------------------------------------------------------------- #
+
+def test_stub_advisory_summary_is_markdown():
+    """Stub summary for a document with findings should use Markdown bullets and bold."""
+    findings = [
+        AdvisoryFinding(
+            finding_id="ocr_crosscheck-0", stage=OCR, type="embedded_only",
+            tier=ConfidenceTier.HIGH, score=None, token_class="id", page=0, bbox=None,
+        ),
+        AdvisoryFinding(
+            finding_id="invoice_arithmetic-0", stage="invoice_arithmetic", type="line_item",
+            tier=ConfidenceTier.MEDIUM, score=None, token_class="amount", page=0, bbox=None,
+        ),
+    ]
+    ai = AdvisoryInput(
+        tier=ConfidenceTier.HIGH, score=80,
+        stages=(
+            AdvisoryStage(stage=OCR, tier=ConfidenceTier.HIGH, score=80, ok=True),
+            AdvisoryStage(stage="invoice_arithmetic", tier=ConfidenceTier.MEDIUM, score=60, ok=True),
+        ),
+        findings=tuple(findings),
+    )
+    out = generate_advisory(ai, engine=StubAdvisoryEngine())
+    summary = out.summary
+    # Must contain at least one Markdown bullet
+    assert "- **" in summary, "summary should contain at least one Markdown bullet"
+    # Must bold the overall confidence tier
+    assert "**HIGH" in summary, "summary should bold the tier"
+    # Must not be a single run-on sentence (should have newlines)
+    assert "\n" in summary, "summary should have newlines separating sections"
+    # tier_statement remains plain text (no Markdown bold)
+    assert "**" not in out.tier_statement, "tier_statement should stay plain text"

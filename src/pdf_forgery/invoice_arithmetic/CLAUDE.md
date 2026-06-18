@@ -57,3 +57,33 @@ status live in the repo-root `CLAUDE.md`.
     `test_invoice_scoring.py` (tier boundaries), `test_invoice_end_to_end.py`
     (fixtures + real Sejda tamper + Microsoft broken row + INCONCLUSIVE on
     malformed/non-invoice).
+
+- [x] **Rate-display-rounding false positives on Azure-style usage bills** (2026-06-18)
+  - Symptom: `Microsoft-Sample-Invoice_clear.pdf` (clean, 13-page) scored
+    **MEDIUM 65 with 69 broken line items**. Every one was a LINE_ITEM
+    `qty * rate = amount` break; subtotal/GST/grand-total all reconciled.
+  - **Root cause: the `rate` column is printed rounded to 2 dp while the true
+    rate carries more precision** (e.g. `2434.87 * shown 0.08 = 194.79` vs
+    stated `204.53`; true rate ≈0.084). With a large `qty` the rounding error
+    is large in both absolute and relative terms, so it blew past `abs_tolerance`
+    / `rel_tolerance` / `gross_rel_error`. This is inherent to the invoice
+    format, not a forgery — and confirms the principle that no fixed tolerance
+    can verify `qty*rate` tighter than the rate's *printed* precision allows.
+  - **Fix (deterministic; declined the LLM-agent idea — conflicts with the
+    fully-local/no-cloud constraint, determinism, and testability):**
+    `relationships._rate_rounding_ok` + config `rate_precision_aware` (default
+    True). For LINE_ITEM only, also accept an amount that falls in the interval
+    `qty * (rate ± ½·10^-rate_decimals)` (rate decimals read from the cell's
+    raw text via `_displayed_decimals`). **`qty` is treated as exact** — widening
+    by an integer qty's ±0.5 would dangerously mask a moderate amount edit, and
+    quantities are exact counts shown at full precision. Threaded through
+    `_make_relationship(within_override=...)` so it can only *accept*, never turn
+    a real break into a false pass. Does NOT touch sum/subtotal/GST/grand-total
+    checks.
+  - **Tests:** `test_invoice_relationships.py` — rate-rounding row → no flag;
+    band disabled → flags; genuine 100× tamper → still flags+gross; moderate
+    real edit (300 vs band top 206.96) → NOT masked.
+  - **Verified:** `_clear` MEDIUM 65 → **LOW 10** (0 broken). `tampered.pdf`
+    still **MEDIUM 65** (both edited rows flag), `Microsoft-Sample-Invoice.pdf`
+    still **MEDIUM 65** (genuine `37004.49` break preserved). Full suite:
+    **821 passed, 1 skipped**.

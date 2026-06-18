@@ -130,5 +130,11 @@ class FontReport:
     notes: tuple[str, ...] = ()
     error: str | None = None
     raw_size: int = 0
+    page_dims: tuple[tuple[float, float], ...] = ()
+    """Per-page ``(width_pt, height_pt)`` in PDF user space (points), indexed by
+    ``page_index``.  Populated when layouts are available; used by the aggregate
+    layer to normalize native glyph bboxes into canonical [0,1] form."""
+    page_rotations: tuple[int, ...] = ()
+    """Per-page ``/Rotate`` values (0/90/180/270), indexed by ``page_index``."""
     _lines: tuple[TextLine, ...] = field(default=(), repr=False, compare=False)
     """Grouped lines retained for inspection/tests; excluded from repr/compare."""

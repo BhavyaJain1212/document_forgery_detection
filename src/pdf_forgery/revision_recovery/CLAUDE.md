@@ -250,3 +250,35 @@ HIGH-on-positive / INCONCLUSIVE-on-negative; README. Later stages
   - **Still open (separate stage):** overall on `_clear.pdf` is now MEDIUM(65)
     driven solely by `invoice_arithmetic` extraction noise (see `docs/TODO.md`),
     not revision recovery.
+
+- [x] **Added-text localization (bounding boxes)** (2026-06-17)
+  - Feature: draw bounding boxes over text an incremental update ADDED, so a
+    reviewer sees *where* the insertion sits. Plan:
+    `~/.claude/plans/we-re-adding-a-feature-agile-bachman.md`.
+  - **`extract/locate.py`** (new): `locate_findings(findings, recon, cfg, notes)`
+    attaches a `FindingLocation` to each text-bearing finding. Approach = a
+    **text-driven multiset diff** between the prior & current reconstructed
+    revisions (both already have `.data`): for each of the finding's `after`
+    tokens, box `count_in_current − count_in_prior` occurrences. Position
+    (`locate_position_tolerance_pt`, default 2.0) is ONLY a tie-breaker among
+    same-text duplicates — so an insertion that **reflows unchanged text past the
+    tolerance is never misread as added**. Reuses `extract_words_per_page` /
+    `extract/normalize`. Never raises: current-rev extraction failure → no box +
+    a diagnostic note; prior-rev failure → degrade to current-only + a note.
+  - **models.py**: `BoxPt` (pdfplumber space) + `FindingLocation`
+    (`boxes`, `page_width_pt`, `page_height_pt`, `page_rotation`) + new
+    `Finding.location` field (default `None`; never affects tier/score).
+  - **config.py**: `enable_localization`, `locate_position_tolerance_pt`,
+    `locate_word_x/y_tolerance`. **analyze.py** calls `locate_findings` after
+    `_build_findings`, merging notes.
+  - **Rotation resolved**: pdfplumber returns VISUAL (rotation-applied) coords
+    and swaps page dims (a 612×792 `/Rotate 90` page → 792×612), so the bbox
+    pipeline is scale-only, no rotation matrix needed. Caveat: pdfminer (the
+    upstream text diff) does NOT apply `/Rotate`, so the live text diff garbles
+    on rotated pages → localizer degrades to no-box (tested directly via a
+    hand-built finding instead).
+  - Tests: `tests/test_locate.py` (12 — multiset/reflow/degradation/rotation +
+    the previously-unexercised "pdfplumber on the PRIOR revision" path);
+    fixtures in `scripts/make_localization_fixtures.py`. Full suite **757 passed,
+    1 skipped**. Aggregate bbox wiring + baked PNG live in `aggregate/` (see its
+    CLAUDE.md).

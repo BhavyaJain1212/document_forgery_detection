@@ -43,11 +43,34 @@ const $ = (id) => document.getElementById(id);
 const views = ["upload", "processing", "result", "error"];
 function showView(name) {
   views.forEach((v) => $(`view-${v}`).classList.toggle("hidden", v !== name));
+  // The result view uses a wider two-column layout; other views stay narrow.
+  document.body.classList.toggle("result-wide", name === "result");
 }
 function esc(s) {
   const d = document.createElement("div");
   d.textContent = s == null ? "" : String(s);
   return d.innerHTML;
+}
+
+// Escape-first Markdown renderer. Supports: **bold**, "- " bullets → <ul><li>,
+// blank lines as paragraph separators. Escape runs first so XSS is impossible.
+function renderMarkdown(src) {
+  if (!src) return "";
+  function escLine(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+  function inline(h) { return h.replace(/\*\*([^*<>]+)\*\*/g, "<strong>$1</strong>"); }
+  const out = []; let inList = false;
+  for (const raw of src.split("\n")) {
+    if (raw.startsWith("- ")) {
+      if (!inList) { out.push("<ul>"); inList = true; }
+      out.push("<li>" + inline(escLine(raw.slice(2))) + "</li>");
+    } else {
+      if (inList) { out.push("</ul>"); inList = false; }
+      if (raw === "") { /* blank line — CSS margin separates blocks */ }
+      else { out.push("<p>" + inline(escLine(raw)) + "</p>"); }
+    }
+  }
+  if (inList) out.push("</ul>");
+  return out.join("");
 }
 function tierClass(t) { return `tier-${t || "inconclusive"}`; }
 function stageName(s) { return (STAGE_META[s] && STAGE_META[s].name) || s; }
@@ -57,6 +80,7 @@ function humanize(s) { return s ? String(s).replace(/_/g, " ") : ""; }
 let pollTimer = null;
 let advisorySource = null;
 let currentFilename = "";
+let currentJobId = null;
 
 function reset() {
   if (pollTimer) clearTimeout(pollTimer);
@@ -69,6 +93,7 @@ function goToUpload() {
   reset();
   $("file-input").value = ""; // so re-selecting the same file re-fires change
   currentFilename = "";
+  currentJobId = null;
   showView("upload");
 }
 
@@ -177,6 +202,7 @@ function updateProcessing(stages) {
 // Polling
 // =====================================================================
 function poll(jobId) {
+  currentJobId = jobId;
   const tick = async () => {
     let status;
     try {
@@ -250,10 +276,113 @@ function renderResult(result) {
       <div class="breakdown__list">${result.stages.map((s) => stageCard(s, result.findings)).join("")}</div>
     </div>`;
 
-  $("view-result").innerHTML = `<div class="result">${actions}${hero}${advisory}${breakdown}</div>`;
+  const analysis = `<div class="result__left">${hero}${advisory}${breakdown}</div>`;
+  const document_ = renderDocPane(result);
+
+  $("view-result").innerHTML =
+    `<div class="result">${actions}<div class="result__split">${analysis}${document_}</div></div>`;
   bindAccordions();
+  bindDocPane();
   $("new-review-btn").addEventListener("click", goToUpload);
   showView("result");
+}
+
+// =====================================================================
+// Document viewer — page image (right) with CSS bounding boxes over the
+// text each finding localised. Coordinates come from the scrubbed,
+// normalized `bbox`; the page pixels come from the gated image endpoint.
+// =====================================================================
+function renderDocPane(result) {
+  const boxed = (result.findings || []).filter(
+    (f) => f.bbox && f.page !== null && f.page !== undefined
+  );
+  const byPage = {};
+  boxed.forEach((f) => {
+    (byPage[f.page] = byPage[f.page] || []).push(f);
+  });
+  const pages = Object.keys(byPage).map(Number).sort((a, b) => a - b);
+
+  let inner;
+  if (pages.length === 0) {
+    inner = `
+      <div class="docpane__empty">
+        <div class="docpane__empty-icon">${I.doc}</div>
+        <p class="docpane__empty-title">No on-page locations to show</p>
+        <p class="docpane__empty-sub">
+          The findings aren’t tied to a specific spot on the page — this happens
+          when a change isn’t in the recoverable text layer (for example an image
+          overlay, or a non-text edit).
+        </p>
+      </div>`;
+  } else {
+    inner = pages.map((p) => docPageFigure(p, byPage[p])).join("");
+  }
+
+  return `
+    <aside class="docpane">
+      <div class="docpane__head">
+        <div class="section-label">Flagged on the document</div>
+        <span class="docpane__legend"><span class="docpane__swatch"></span>Edited text</span>
+      </div>
+      <div class="docpane__scroll">${inner}</div>
+    </aside>`;
+}
+
+function docPageFigure(page, findings) {
+  const boxes = findings
+    .map((f) => {
+      const b = f.bbox;
+      const left = (b.x0 * 100).toFixed(3);
+      const top = (b.y0 * 100).toFixed(3);
+      const w = ((b.x1 - b.x0) * 100).toFixed(3);
+      const h = ((b.y1 - b.y0) * 100).toFixed(3);
+      return `<span class="docbox ${tierClass(f.tier)}" data-finding-id="${esc(f.finding_id)}"
+        style="left:${left}%;top:${top}%;width:${w}%;height:${h}%"></span>`;
+    })
+    .join("");
+  const src = `/v1/jobs/${encodeURIComponent(currentJobId)}/pages/${page}/image.png`;
+  return `
+    <figure class="docpage">
+      <div class="docpage__frame">
+        <img class="docpage__img" src="${src}" alt="Page ${page + 1}" loading="lazy" />
+        <div class="docpage__boxes">${boxes}</div>
+      </div>
+      <figcaption class="docpage__cap">Page ${page + 1}</figcaption>
+    </figure>`;
+}
+
+// Link the left-hand finding rows to their boxes on the right: hover to
+// highlight, click to scroll the box into view and pulse it.
+function bindDocPane() {
+  const boxMap = {};
+  document.querySelectorAll(".docbox[data-finding-id]").forEach((b) => {
+    const id = b.getAttribute("data-finding-id");
+    (boxMap[id] = boxMap[id] || []).push(b);
+  });
+
+  document.querySelectorAll(".finding[data-group-ids]").forEach((row) => {
+    const ids = (row.getAttribute("data-group-ids") || "").split(" ").filter(Boolean);
+    const boxes = ids.reduce((acc, id) => acc.concat(boxMap[id] || []), []);
+    if (!boxes.length) return;
+    row.classList.add("is-locatable");
+    const on = () => boxes.forEach((b) => b.classList.add("is-active"));
+    const off = () => boxes.forEach((b) => b.classList.remove("is-active"));
+    row.addEventListener("mouseenter", on);
+    row.addEventListener("mouseleave", off);
+    row.addEventListener("click", () => {
+      boxes[0].scrollIntoView({ behavior: "smooth", block: "center" });
+      on();
+      setTimeout(off, 1600);
+    });
+  });
+
+  // Degrade gracefully if a page image can't be rendered (e.g. no renderer).
+  document.querySelectorAll(".docpage__img").forEach((img) => {
+    img.addEventListener("error", () => {
+      const fig = img.closest(".docpage");
+      if (fig) fig.innerHTML = `<div class="docpage__err">Page preview unavailable.</div>`;
+    });
+  });
 }
 
 function findingsSummary(findings) {
@@ -381,7 +510,7 @@ function connectAdvisory(jobId) {
 }
 
 function finishAdvisory(out) {
-  $("adv-summary").textContent = out.summary || "";
+  $("adv-summary").innerHTML = renderMarkdown(out.summary || "");
 
   const tierEl = $("adv-tier");
   if (out.tier_statement) {
@@ -402,11 +531,20 @@ function finishAdvisory(out) {
       const elIds = (el.getAttribute("data-group-ids") || "").split(" ").filter(Boolean);
       if (!elIds.some((id) => idSet.has(id))) return;
       el.innerHTML = `
-        <dl class="expl">
-          <div class="expl__row"><dt class="expl__label">Found</dt><dd>${esc(g.what_we_found)}</dd></div>
-          <div class="expl__row"><dt class="expl__label">Why it matters</dt><dd>${esc(g.why_it_matters)}</dd></div>
-          <div class="expl__row"><dt class="expl__label">Check</dt><dd>${esc(g.what_to_check)}</dd></div>
-        </dl>`;
+        <div class="expl-cards">
+          <div class="expl-card">
+            <div class="expl-card__label">Found</div>
+            <p class="expl-card__body">${esc(g.what_we_found)}</p>
+          </div>
+          <div class="expl-card">
+            <div class="expl-card__label">Why it matters</div>
+            <p class="expl-card__body">${esc(g.why_it_matters)}</p>
+          </div>
+          <div class="expl-card">
+            <div class="expl-card__label">Check</div>
+            <p class="expl-card__body">${esc(g.what_to_check)}</p>
+          </div>
+        </div>`;
     });
   });
 }

@@ -334,6 +334,23 @@ _TIER_STATEMENTS = {
 }
 
 
+def _closing_md(tier_value: str, score_text: str) -> str:
+    """Markdown-bolded confidence closing line for the Markdown summary."""
+    if tier_value == "inconclusive":
+        return (
+            "**INCONCLUSIVE** — these methods could not assess this document"
+            " — that is not the same as clean; a reviewer should examine it manually."
+        )
+    tier_upper = tier_value.upper()
+    tails = {
+        "low": "no substantive evidence of tampering was found by these methods.",
+        "medium": "some signals warrant a closer review, but are not conclusive on their own.",
+        "high": "these methods found strong evidence of an edit; a reviewer should confirm.",
+    }
+    tail = tails.get(tier_value, "a reviewer should examine this document.")
+    return f"Overall confidence is **{tier_upper} (score {score_text})** — {tail}"
+
+
 def _render_advisory(
     advisory_input: AdvisoryInput,
     groups: list[FindingGroup],
@@ -343,14 +360,16 @@ def _render_advisory(
     tier_value = advisory_input.tier.value
     score_text = "n/a" if advisory_input.score is None else str(advisory_input.score)
 
+    # Plain-text tier statement — shown separately in #adv-tier, not in the summary.
     tier_statement = _TIER_STATEMENTS.get(
         tier_value, _TIER_STATEMENTS["inconclusive"]
     ).format(score=score_text)
 
     if not groups:
         summary = (
-            f"No findings were flagged. {tier_statement}"
-            " A reviewer makes the final decision."
+            "No findings were flagged.\n\n"
+            + tier_statement
+            + " A reviewer makes the final decision."
         )
         return AdvisoryOutput(
             summary=summary,
@@ -360,26 +379,38 @@ def _render_advisory(
             model=model,
         )
 
-    # Summary: synthesize across all groups into a 2-4 sentence narrative.
+    # Markdown summary: bold stage names + one bullet per group + closing tier line.
     stages_seen = sorted({g.stage for g in groups})
-    group_desc_parts = []
-    for g in groups:
-        meaning, _ = get_glossary_entry(g.type)
-        token_desc = f" in {g.token_class} fields" if g.token_class else ""
-        count_desc = f"{g.count}×" if g.count > 1 else "once"
-        pages_str = _format_pages(g.pages)
-        loc = f", {pages_str}" if pages_str else ""
-        group_desc_parts.append(
-            f"{_humanize_type(g.type)}{token_desc} ({count_desc}{loc})"
+    if len(stages_seen) == 1:
+        stages_md = f"**{stages_seen[0]}**"
+    elif len(stages_seen) == 2:
+        stages_md = f"**{stages_seen[0]}** and **{stages_seen[1]}**"
+    else:
+        stages_md = (
+            ", ".join(f"**{s}**" for s in stages_seen[:-1])
+            + f" and **{stages_seen[-1]}**"
         )
 
     n = len(groups)
-    noun = "group" if n == 1 else "groups"
+    noun = "finding group" if n == 1 else "finding groups"
+
+    bullets = []
+    for g in groups:
+        label = f"**{_humanize_type(g.type)}**"
+        if g.token_class:
+            label += f" ({g.token_class} fields)"
+        pages_str = _format_pages(g.pages)
+        suffix = f" — {pages_str}" if pages_str else ""
+        if g.count > 1:
+            suffix += f" ({g.count}×)"
+        bullets.append(f"- {label}{suffix}")
+
     summary = (
-        f"{n} finding {noun} across {', '.join(stages_seen)}: "
-        f"{'; '.join(group_desc_parts)}. "
-        f"{tier_statement} "
-        "A reviewer should examine the cited findings before deciding."
+        f"Across {stages_md}, these methods flagged {n} {noun}:\n"
+        "\n"
+        + "\n".join(bullets)
+        + "\n\n"
+        + _closing_md(tier_value, score_text)
     )
 
     # Per-group explanations.
@@ -436,6 +467,10 @@ def _what_to_check(group: FindingGroup) -> str:
     pages_str = _format_pages(group.pages)
     page_ref = f" on {pages_str}" if pages_str else ""
 
+    if stage == "invoice_arithmetic":
+        return _invoice_what_to_check(type_, page_ref)
+    if stage == "provenance_metadata":
+        return _provenance_what_to_check(type_)
     if stage == "ocr_crosscheck":
         if type_ == "embedded_only":
             return (
@@ -461,17 +496,87 @@ def _what_to_check(group: FindingGroup) -> str:
             f"Inspect the flagged tokens{page_ref} for font inconsistencies;"
             " compare with the surrounding text."
         )
-    if stage == "invoice_arithmetic":
-        return (
-            f"Re-verify the arithmetic{page_ref} manually; confirm against"
-            " source documents (purchase orders, receipts)."
-        )
-    if stage == "provenance_metadata":
-        return (
-            "Check the document's metadata (creation date, modification date,"
-            " producer) against the expected workflow."
-        )
     return "Review this finding in the context of the other detector results."
+
+
+def _invoice_what_to_check(type_: str, page_ref: str) -> str:
+    if type_ == "line_item":
+        return (
+            f"Re-check the quantity × unit-price calculation{page_ref}"
+            " and compare the stated line total against source documents."
+        )
+    if type_ == "subtotal_sum":
+        return (
+            f"Re-verify that the line amounts add up to the stated subtotal{page_ref};"
+            " check each line's contribution individually."
+        )
+    if type_ == "grand_total":
+        return (
+            f"Re-verify the grand total against subtotal, taxes, and discounts{page_ref};"
+            " confirm with source purchase orders or receipts."
+        )
+    if type_ == "gst_sum":
+        return (
+            f"Re-check the GST breakdown{page_ref};"
+            " confirm CGST + SGST (+ IGST) equals the stated tax total."
+        )
+    if type_ == "deposit_balance":
+        return (
+            f"Confirm the deposit and balance amounts{page_ref}"
+            " sum to the final stated amount."
+        )
+    if type_ == "room_charge":
+        return (
+            f"Re-verify room rate × days{page_ref};"
+            " cross-check with check-in and check-out dates."
+        )
+    if type_ == "date_span":
+        return (
+            f"Confirm the dates{page_ref} match the number of charged days;"
+            " cross-check with admission and discharge records."
+        )
+    return (
+        f"Re-verify the arithmetic{page_ref} manually; confirm against"
+        " source documents (purchase orders, receipts)."
+    )
+
+
+def _provenance_what_to_check(type_: str) -> str:
+    if type_ in ("web_editor_producer", "version_only_producer"):
+        return (
+            "Check whether use of this editing tool is consistent with the"
+            " document's expected workflow and the submitting institution."
+        )
+    if type_ == "browser_creator":
+        return (
+            "Determine whether a browser-print export is expected for this document"
+            " type; if not, request the original source file from the submitter."
+        )
+    if type_ == "moddate_after_creation":
+        return (
+            "Compare the modification date against the expected document timeline;"
+            " determine whether a legitimate update occurred after creation."
+        )
+    if type_ == "xmp_info_producer_mismatch":
+        return (
+            "Compare the XMP and Info dictionary producer strings;"
+            " a mismatch may indicate the metadata was altered to obscure the edit trail."
+        )
+    if type_ == "id_halves_mismatch":
+        return (
+            "Note that the document's unique /ID changed after creation;"
+            " verify whether this is consistent with the document's history."
+        )
+    if type_ == "composite_edit_footprint":
+        return (
+            "Examine all provenance signals together (producer, creator, modification"
+            " date); determine whether consumer re-editing is consistent with the"
+            " expected workflow."
+        )
+    return (
+        "Check the document's metadata (creation date, modification date,"
+        " producer) against the expected workflow."
+    )
 
 
 __all__ = [

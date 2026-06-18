@@ -45,5 +45,21 @@ class AggregateConfig:
     """Salt for :func:`~pdf_forgery.aggregate.safe_log.salted_hash`. Set per
     deployment; empty in tests."""
 
+    # ------------------------------------------------------------------ #
+    # Overlay rendering (baked annotated PNG; PHI-side gated evidence)    #
+    # ------------------------------------------------------------------ #
+
+    overlay_dpi: int = 150
+    """Render DPI for the baked annotated page PNG (pixel = point * dpi/72)."""
+
+    overlay_box_rgb: tuple[int, int, int] = (220, 38, 38)
+    """Highlight box stroke/fill colour (crimson — matches the HIGH tier accent)."""
+
+    overlay_box_width: int = 3
+    """Highlight box outline width, in pixels."""
+
+    overlay_fill_alpha: float = 0.25
+    """Translucent fill opacity for the highlight box, in ``[0, 1]``."""
+
 
 __all__ = ["AggregateConfig"]

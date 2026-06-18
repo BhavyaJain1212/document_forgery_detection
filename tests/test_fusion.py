@@ -128,6 +128,22 @@ def test_no_results_inconclusive():
     assert a.tier is ConfidenceTier.INCONCLUSIVE
 
 
+def test_clean_provenance_clears_to_low_not_inconclusive():
+    # The common clean-document case: no comparison method applies (single
+    # revision, uniform font, not an invoice), but provenance read the file and
+    # found no anomalies -> overall CLEAN (LOW), not INCONCLUSIVE.
+    res = [
+        _result(REV, ConfidenceTier.INCONCLUSIVE),
+        _result(FONT, ConfidenceTier.INCONCLUSIVE),
+        _result(ARITH, ConfidenceTier.INCONCLUSIVE),
+        _result(PROV, ConfidenceTier.LOW, 0),
+    ]
+    a = fuse(res)
+    assert a.tier is ConfidenceTier.LOW
+    assert a.score == 0
+    assert PROV in a.contributing_stages
+
+
 # --------------------------------------------------------------------------- #
 # Failed stages are noted, not counted as signal.
 # --------------------------------------------------------------------------- #

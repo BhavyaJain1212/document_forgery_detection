@@ -144,6 +144,10 @@ class OCRCrossCheckReport:
     #: guard, OCR words dropped below the confidence floor, matched/agree counts.
     diagnostics: dict[str, int] = field(default_factory=dict)
     notes: tuple[str, ...] = ()
+    page_dims_px: tuple[tuple[float, float], ...] = ()
+    """Per-page ``(width_px, height_px)`` at ``render_dpi``, indexed by
+    ``page_index``.  Already rotation-aware (pypdfium2 swaps dims for 90/270).
+    Used by the aggregate layer to normalize pixel-space bboxes."""
 
 
 __all__ = [

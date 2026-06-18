@@ -104,6 +104,43 @@ def test_line_item_localizes_to_amount_cell():
 
 
 # --------------------------------------------------------------------------- #
+# Rate-display-rounding band (Azure-style: 2-dp rate over a multi-dp true rate)
+# --------------------------------------------------------------------------- #
+
+def test_line_item_rate_display_rounding_does_not_flag():
+    # 2434.87 * shown 0.08 = 194.79 but stated 204.53 (true rate ~0.084).
+    # Far outside abs/rel tolerance, but inside the rate's printed-precision band.
+    table = _table([_line_row(2434.87, 0.08, 204.53, 480)])
+    rel = evaluate_relationships([table])[0]
+    assert rel.within_tolerance is True
+
+
+def test_rate_rounding_band_can_be_disabled():
+    from pdf_forgery.invoice_arithmetic.config import InvoiceConfig
+
+    table = _table([_line_row(2434.87, 0.08, 204.53, 480)])
+    rel = evaluate_relationships([table], config=InvoiceConfig(rate_precision_aware=False))[0]
+    assert rel.within_tolerance is False
+    assert rel.is_gross is True
+
+
+def test_genuine_tamper_outside_rate_band_still_flags():
+    # 100x edit with operands untouched — far beyond any rounding band.
+    table = _table([_line_row(3, 83.23, 24019.69, 480)])
+    rel = evaluate_relationships([table])[0]
+    assert rel.within_tolerance is False
+    assert rel.is_gross is True
+
+
+def test_moderate_amount_edit_not_masked_by_rate_band():
+    # rate 0.08 band tops out at 2434.87 * 0.085 = 206.96; stated 300 is a real
+    # edit and must NOT be swallowed by the precision band.
+    table = _table([_line_row(2434.87, 0.08, 300.00, 480)])
+    rel = evaluate_relationships([table])[0]
+    assert rel.within_tolerance is False
+
+
+# --------------------------------------------------------------------------- #
 # Summary block: subtotal, grand total, GST
 # --------------------------------------------------------------------------- #
 
