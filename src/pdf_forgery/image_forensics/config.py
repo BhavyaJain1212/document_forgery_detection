@@ -44,9 +44,27 @@ class ImageForensicsConfig:
     min_blob_area_frac: float = 0.005
     """Drop heatmap blobs smaller than this fraction of the image area (speckle)."""
 
+    global_coverage_frac: float = 0.65
+    """A method whose thresholded heatmap (or any single blob) covers >= this
+    fraction of the image is treated as a GLOBAL / diffuse signal — whole-image
+    recompression or a uniform scanner artifact, NOT a local edit. Such a signal
+    is recorded but never emitted as a localized tamper region (§5/§7 LOW rule:
+    'only a GLOBAL/diffuse signal ... consistent with an innocent rescan')."""
+
     colocate_iou: float = 0.30
     """Two method fires are co-located when their page-point bboxes overlap by
     at least this IoU — the corroboration test that gates HIGH (§7)."""
+
+    # ---- High-value region heuristic (§4 — positional, NOT a token class) -- #
+    high_value_band_top_frac: float = 0.50
+    high_value_band_bottom_frac: float = 1.0
+    """Vertical band of the page (fractions of page height, measured top-down)
+    treated as the 'amount / total' area on a scanned bill. A surviving region
+    overlapping this band is TAGGED high-value. This is a deliberately coarse
+    POSITIONAL prior — scanned pages have no reliable text layer, so we do NOT
+    fabricate token classes (amount/date/etc.); the tag is advisory only and at
+    most a weak booster downstream (6.3). Default: the lower half of the page,
+    where invoice totals usually sit. Widen/narrow per document population."""
 
     # ---- Per-method heatmap thresholds (§5; consumed in 6.2/6.3) -------- #
     ela_threshold: float = 0.50

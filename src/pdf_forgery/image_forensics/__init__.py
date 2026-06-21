@@ -35,6 +35,24 @@ from .engine import (  # noqa: E402
     default_provider,
 )
 from .images import DecodedImage, decoded_images, extract_images  # noqa: E402
+from .detect import (  # noqa: E402
+    DetectionResult,
+    GlobalSignal,
+    MethodError,
+    MethodFire,
+    TamperRegion,
+    combine_fires,
+    detect,
+    method_threshold,
+)
+from .localize import (  # noqa: E402
+    Blob,
+    blob_to_page_bbox,
+    heatmap_blobs,
+    hot_fraction,
+    iou,
+    overlaps_high_value,
+)
 
 __all__ = [
     "STAGE_NAME",
@@ -54,4 +72,19 @@ __all__ = [
     "PhotoHolmesProvider",
     "StubForensicProvider",
     "default_provider",
+    # Session 6.2 — detectors + localization
+    "DetectionResult",
+    "TamperRegion",
+    "MethodFire",
+    "GlobalSignal",
+    "MethodError",
+    "detect",
+    "combine_fires",
+    "method_threshold",
+    "Blob",
+    "heatmap_blobs",
+    "hot_fraction",
+    "blob_to_page_bbox",
+    "iou",
+    "overlaps_high_value",
 ]

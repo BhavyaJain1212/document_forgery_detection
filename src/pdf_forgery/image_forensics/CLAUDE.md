@@ -74,11 +74,51 @@ Stage 6 (raster / pixel forensics) — the destination of Stage 3's
     Protocol conformance, provenance. Full suite: **843 passed, 1 skipped**
     (skip = pre-existing pristine-invoice precision baseline, unrelated).
 
-## Next — 6.2 / 6.3
-6.2: implement the classical methods (ELA, DQ/double-JPEG, JPEG-grid, noise
-residual, copy-move) in `ClassicalProvider`, + the heatmap→`BBox` localizer
-(design §6). 6.3: scoring rule tree (§7), `ImageForensicsStage` (`core.Stage`),
-adapter ↔ `StageResult`, wire into the live `STAGES` (substantive, NOT a
-corroborator), `aggregate._finding_bbox` `image_forensics` branch, gated
-heatmap-overlay endpoint, and the spliced/copy-move/double-compressed precision
-fixtures.
+- [x] **Stage 6 / Session 6.2 — detectors (combination) + bbox localization**
+  (2026-06-22)
+  - **Scope decision (owner-approved):** detect/localize ONLY. The consumer layer
+    against the `ForensicProvider` Protocol; the real classical pixel math (ELA /
+    DQ / noise DSP) is deferred to its own follow-up — the 6.1 classical methods
+    still raise `NotImplementedError`. (The 6.2 prompt's working names
+    `raster_forensics` / `MethodResult` map to the locked `image_forensics` /
+    `ForensicMap`, same as 6.1.)
+  - `localize.py` — heatmap → `BBox`, no signal math. `heatmap_blobs` (threshold →
+    `cv2.connectedComponentsWithStats`, 8-conn, → `scipy.ndimage.label` →
+    all-hot-pixels fallback; drops `< min_blob_area_frac` speckle) yields
+    **fractional** `Blob`s (resolution-independent). `frac_bbox_to_page_bbox` /
+    `blob_to_page_bbox` map a fractional box LINEARLY into the image's top-left
+    `placement` rect (upright-placement assumption documented; no retained CTM →
+    conservative axis-aligned). `hot_fraction` (global-signal test), `iou`,
+    `union_bbox`, `overlaps_high_value` (the §4 **positional** amount-band tag —
+    NO fabricated token classes).
+  - `detect.py` — orchestration, **provider-agnostic** (depends only on the
+    Protocol). `detect(ctx, provider=, config=, activation=)` runs applicable
+    methods over image-dominant pages → `_fires_from_map` (suppress whole-image
+    lift / single dominant blob as `GlobalSignal`; scalar-only fire → global) →
+    `combine_fires` (greedy IoU≥`colocate_iou` cluster; region with ≥2 **distinct**
+    methods ⇒ `co_located`, the §7 HIGH gate). Emits provisional `TamperRegion`s
+    (NOT a `StageResult`) + `MethodFire`/`GlobalSignal`/`MethodError` +
+    `ForensicProvenance`. A method that raises → `MethodError` (never dropped) —
+    so the real `ClassicalProvider` degrades to all-errors + no regions, never
+    crashes. Read-only, never raises.
+  - `config.py` — added `global_coverage_frac` (0.65, whole-image suppression),
+    `high_value_band_top_frac` (0.50) / `high_value_band_bottom_frac` (1.0).
+  - Tests: `tests/test_image_forensics_detect.py` (25) — hand-checked coordinate
+    transform; blob extraction + speckle drop; IoU + high-value band; whole-image
+    / scalar-only / sub-threshold suppression; co-located vs lone vs same-method
+    corroboration; e2e over `build_jpeg_image_pdf` (spliced-amount → localized
+    high-value co-located region; clean → none; whole-page recompression → no
+    local region, recorded global; method-error capture; no-image-dominant →
+    empty; real `ClassicalProvider` degrades to `NotImplementedError` errors).
+    Full suite: **868 passed, 1 skipped**.
+
+## Next — 6.3 (+ deferred DSP)
+**Deferred from 6.2:** implement the real classical pixel math in
+`ClassicalProvider` (ELA, DQ/double-JPEG, JPEG-grid, noise residual, copy-move)
+so `analyze` returns genuine heatmaps instead of `NotImplementedError`, + the
+spliced/clean/recompression acceptance fixtures that drive it end-to-end.
+6.3: scoring rule tree (§7) consuming `DetectionResult` → tier/score,
+`ImageForensicsStage` (`core.Stage`), adapter ↔ `StageResult`, wire into the live
+`STAGES` (substantive, NOT a corroborator), `aggregate._finding_bbox`
+`image_forensics` branch (the `TamperRegion` page-point boxes are already in
+`FindingLocation` shape), gated heatmap-overlay endpoint.
