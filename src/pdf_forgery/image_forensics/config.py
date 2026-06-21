@@ -84,10 +84,23 @@ class ImageForensicsConfig:
     """A DL method is instantiated only when at least this much free VRAM exists;
     otherwise the stage degrades to classical-only with a note."""
 
-    # ---- Score bands (§7; shared core semantics) ------------------------ #
+    # ---- Scoring rule tree (§7; shared core semantics) ------------------ #
+    region_medium_min_strength: float = 0.60
+    """A lone (single-method, uncorroborated) region needs peak strength >= this
+    to reach MEDIUM; a weaker isolated blob is LOW (the §7 'single weak isolated
+    blob from ONE method' rule). A co-located region is HIGH regardless — two
+    independent methods over the same region IS the corroboration."""
+
     score_low: int = 15
     score_medium: int = 50
+    score_medium_method_error: int = 40
+    """MEDIUM score when the only signal is a method that ERRORED on an
+    image-dominant page (never silently dropped, but weaker than a real region)."""
+
     score_high: int = 80
+    score_high_value_bump: int = 8
+    """Added to a HIGH co-located region's score when it overlaps the high-value
+    band (capped at 100). Keeps amount-band tampers at the top of the HIGH band."""
 
 
 __all__ = ["ImageForensicsConfig"]

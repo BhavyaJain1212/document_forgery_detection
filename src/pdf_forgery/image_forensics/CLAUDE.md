@@ -112,13 +112,46 @@ Stage 6 (raster / pixel forensics) — the destination of Stage 3's
     empty; real `ClassicalProvider` degrades to `NotImplementedError` errors).
     Full suite: **868 passed, 1 skipped**.
 
-## Next — 6.3 (+ deferred DSP)
-**Deferred from 6.2:** implement the real classical pixel math in
-`ClassicalProvider` (ELA, DQ/double-JPEG, JPEG-grid, noise residual, copy-move)
-so `analyze` returns genuine heatmaps instead of `NotImplementedError`, + the
-spliced/clean/recompression acceptance fixtures that drive it end-to-end.
-6.3: scoring rule tree (§7) consuming `DetectionResult` → tier/score,
-`ImageForensicsStage` (`core.Stage`), adapter ↔ `StageResult`, wire into the live
-`STAGES` (substantive, NOT a corroborator), `aggregate._finding_bbox`
-`image_forensics` branch (the `TamperRegion` page-point boxes are already in
-`FindingLocation` shape), gated heatmap-overlay endpoint.
+- [x] **Stage 6 / Session 6.3 — scoring + StageResult + fusion integration**
+  (2026-06-22)
+  - **Scope decision (owner-approved):** scoring/stage/fusion now; the real
+    classical DSP stays DEFERRED. Key gate: a method raising `NotImplementedError`
+    is a **capability gap** (`detect.CapabilityGap`), NOT a `MethodError` — the
+    scorer treats gaps as *no signal* → INCONCLUSIVE, so registering the stage
+    live while every classical method is a stub can never manufacture a false
+    MEDIUM. `DetectionResult.analyzed` = "did any method actually execute".
+  - `scoring.py` — `score(detection, activation, cfg)` → `ImageForensicsReport`
+    (rich payload). §7 rule tree: no image-dominant page **or** only capability
+    gaps → INCONCLUSIVE; co-located region (≥2 independent methods) → **HIGH**
+    (`score_high` 80, +`score_high_value_bump` 8 in the amount band; the ONLY HIGH
+    path); lone region ≥ `region_medium_min_strength` **or** a `MethodError` →
+    MEDIUM (capped — cross-stage corroboration lifts in fusion); weak lone / global
+    / nothing-fired → LOW. Worst-case rollup; per-region `RegionFinding` tiers.
+  - `stage.py` — `ImageForensicsStage` (`core.Stage`): activate → detect → score →
+    `report_to_stage_result`. Provider injectable (tests); default = classical
+    (→ gaps → INCONCLUSIVE live). Findings carry NO text (only pixels); geometry
+    rides the payload region (`TamperRegion.page_bbox`, already `FindingLocation`
+    shape); high-value tag = positional `"amount"`. Never raises → `ok=False`.
+  - `config.py` — `region_medium_min_strength` (0.60), `score_medium_method_error`
+    (40), `score_high_value_bump` (8).
+  - **Registered live** as SUBSTANTIVE in `aggregate/jobs.py` (`STAGE_ORDER` +
+    `build_default_stages`) and `test.py` `STAGES`, after `ocr_crosscheck`. NOT in
+    `FusionConfig.corroborator_stages` → fusion needed **no change**: a Stage 6
+    HIGH originates a verdict; INCONCLUSIVE never drags a parse-side HIGH down; a
+    Stage 6 MEDIUM + `provenance_metadata` corroboration escalates to HIGH (same
+    mechanism as `invoice_arithmetic`).
+  - Tests: `tests/test_image_forensics_scoring.py` (15) — every tier branch;
+    `tests/test_image_forensics_stage.py` (9) — Stage protocol, e2e
+    digital-native→INCONCLUSIVE / spliced→HIGH-with-bbox / real-classical→
+    INCONCLUSIVE / internal-failure→`ok=False`, + the four fusion confirmations.
+    Full suite: **887 passed, 1 skipped**.
+
+## Next — DEFERRED classical DSP (the one piece left)
+Stage 6 is wired end-to-end and live, but **INCONCLUSIVE on every document until
+the real pixel math lands**. Remaining: implement ELA / DQ-double-JPEG /
+JPEG-grid / noise-residual / copy-move in `ClassicalProvider.analyze` (replace the
+`NotImplementedError` stubs) so genuine heatmaps flow through detect→score; add
+the spliced/clean/recompression/copy-move **acceptance fixtures** on real pixels;
+optional `aggregate._finding_bbox` `image_forensics` branch + gated heatmap-overlay
+endpoint for the UI (the boxes are already in `FindingLocation` shape on the
+payload). PhotoHolmes / opt-in DL remains optional-only.

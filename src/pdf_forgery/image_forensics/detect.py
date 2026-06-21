@@ -101,6 +101,21 @@ class MethodError:
 
 
 @dataclass(frozen=True)
+class CapabilityGap:
+    """A method whose implementation is not yet available (``NotImplementedError``).
+
+    Distinct from :class:`MethodError`: a capability gap means the method could not
+    even attempt the analysis (the classical pixel math is deferred — Session 6.2
+    decision), NOT that an implemented method failed at runtime. The scorer treats
+    a gap as "no signal" (→ INCONCLUSIVE), so registering the stage live while the
+    DSP is deferred can never manufacture a false MEDIUM. A genuine runtime error
+    on an implemented method is a :class:`MethodError` (→ MEDIUM)."""
+
+    page_index: int
+    method: str
+
+
+@dataclass(frozen=True)
 class TamperRegion:
     """A combined provisional region: which methods back it, co-located?, high-value?"""
 
@@ -123,6 +138,7 @@ class DetectionResult:
     fires: tuple[MethodFire, ...] = ()
     global_signals: tuple[GlobalSignal, ...] = ()
     method_errors: tuple[MethodError, ...] = ()
+    capability_gaps: tuple[CapabilityGap, ...] = ()
     analyzed_pages: tuple[int, ...] = ()
     provider: str = ""
     provenance: ForensicProvenance | None = None
@@ -134,6 +150,15 @@ class DetectionResult:
     @property
     def any_co_located(self) -> bool:
         return any(r.co_located for r in self.regions)
+
+    @property
+    def analyzed(self) -> bool:
+        """True if at least one method actually executed (ran or errored).
+
+        Capability gaps (deferred / unavailable methods) do NOT count — a page
+        with only gaps was never really analysed, so the scorer keeps it
+        INCONCLUSIVE rather than inventing a verdict from nothing."""
+        return bool(self.fires or self.global_signals or self.method_errors)
 
 
 # --------------------------------------------------------------------------- #
@@ -175,7 +200,7 @@ def detect(
     dominant = set(act.image_dominant_pages)
     targets = [im for im in images if im.page_index in dominant]
 
-    fires, globals_, errors = _run_methods(prov, targets, cfg)
+    fires, globals_, errors, gaps = _run_methods(prov, targets, cfg)
     regions = combine_fires(fires, cfg)
 
     return DetectionResult(
@@ -183,6 +208,7 @@ def detect(
         fires=tuple(fires),
         global_signals=tuple(globals_),
         method_errors=tuple(errors),
+        capability_gaps=tuple(gaps),
         analyzed_pages=tuple(sorted(dominant)),
         provider=getattr(prov, "name", ""),
         provenance=_provenance(prov, cfg),
@@ -193,11 +219,12 @@ def _run_methods(
     prov: ForensicProvider,
     images: list[DecodedImage],
     cfg: ImageForensicsConfig,
-) -> tuple[list[MethodFire], list[GlobalSignal], list[MethodError]]:
+) -> tuple[list[MethodFire], list[GlobalSignal], list[MethodError], list[CapabilityGap]]:
     """Run every applicable method over every image; localize / suppress each map."""
     fires: list[MethodFire] = []
     globals_: list[GlobalSignal] = []
     errors: list[MethodError] = []
+    gaps: list[CapabilityGap] = []
 
     try:
         methods = prov.methods(cfg)
@@ -213,8 +240,15 @@ def _run_methods(
                 continue
             try:
                 fmap = method.analyze(image, cfg)
+            except NotImplementedError:
+                # Capability not yet available (deferred classical DSP) — NOT a
+                # runtime failure. Recorded as a gap → no signal (INCONCLUSIVE),
+                # so a stub-only provider can never manufacture a false MEDIUM.
+                gaps.append(CapabilityGap(image.page_index, method.name))
+                continue
             except Exception as exc:
-                # Never silently dropped — surfaces as MEDIUM in 6.3.
+                # A genuine error in an IMPLEMENTED method — never silently
+                # dropped; surfaces as MEDIUM in scoring.
                 errors.append(
                     MethodError(image.page_index, method.name, type(exc).__name__)
                 )
@@ -222,7 +256,7 @@ def _run_methods(
             f, g = _fires_from_map(fmap, image, cfg)
             fires.extend(f)
             globals_.extend(g)
-    return fires, globals_, errors
+    return fires, globals_, errors, gaps
 
 
 def _fires_from_map(
@@ -383,6 +417,7 @@ __all__ = [
     "MethodFire",
     "GlobalSignal",
     "MethodError",
+    "CapabilityGap",
     "TamperRegion",
     "DetectionResult",
     "method_threshold",

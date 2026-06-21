@@ -338,9 +338,11 @@ class TestDetectEndToEnd:
         assert res.analyzed_pages == ()
         assert res.regions == ()
 
-    def test_real_classical_provider_degrades_to_errors(self):
-        # The 6.1 classical methods still raise NotImplementedError; detect() must
-        # record them as method errors and never crash (the deferred-math contract).
+    def test_real_classical_provider_degrades_to_capability_gaps(self):
+        # The classical methods still raise NotImplementedError (deferred DSP);
+        # detect() must record those as CAPABILITY GAPS (not runtime errors) and
+        # never crash. Gaps are "no signal" → INCONCLUSIVE in scoring, so the live
+        # stage cannot manufacture a false MEDIUM while the DSP is deferred.
         if not ClassicalProvider().is_available():
             pytest.skip("classical CPU stack (numpy/cv2/PIL) unavailable")
         pdf, _ = fixtures.build_jpeg_image_pdf()
@@ -348,5 +350,6 @@ class TestDetectEndToEnd:
         res = detect(ctx, provider=ClassicalProvider(), config=CFG)
         assert res.regions == ()
         assert res.provider == "classical"
-        assert len(res.method_errors) >= 1
-        assert all(e.reason == "NotImplementedError" for e in res.method_errors)
+        assert res.method_errors == ()        # not runtime errors
+        assert len(res.capability_gaps) >= 1  # deferred capability
+        assert res.analyzed is False          # nothing actually executed

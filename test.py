@@ -23,6 +23,7 @@ from pathlib import Path
 
 from pdf_forgery.font_forensics import FontForensicsStage
 from pdf_forgery.fusion import fuse, render_overall_summary
+from pdf_forgery.image_forensics import ImageForensicsStage
 from pdf_forgery.invoice_arithmetic import InvoiceArithmeticStage
 from pdf_forgery.ocr_crosscheck.stage import OCRCrossCheckStage
 from pdf_forgery.pipeline import run_pipeline_on_path
@@ -54,6 +55,7 @@ STAGES = (
     InvoiceArithmeticStage(),
     ProvenanceMetadataStage(),
     OCRCrossCheckStage(),   # Stage 3 — degrades to INCONCLUSIVE when PaddleOCR / pypdfium2 absent
+    ImageForensicsStage(),  # Stage 6 — INCONCLUSIVE until the classical DSP lands (deferred)
 )
 
 

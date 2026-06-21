@@ -278,25 +278,50 @@ deferred to 6.2/6.3 (the `analyze` bodies raise `NotImplementedError`).
       round-trip + raw bytes, CMYK, Indexed), CTM placement, activation boundaries,
       stub determinism, engine availability fallback. Suite **843 passed, 1 skip**.
 
-### image_forensics / 6.2 — copy-move + localization + scoring + orchestration + wiring + fixtures
-- [ ] **Copy-move** (`methods/copymove.py`): OpenCV ORB + RANSAC affine; conservative
-      (min match count, non-trivial offset; never HIGH alone).
-- [ ] **Localization** (`localize.py`): heatmap → threshold → connected-component
-      blobs → page points (pdfplumber top-left) + page dims; `aggregate._finding_bbox`
-      gains an `image_forensics` branch → canonical `[0,1]` `BBox`.
-- [ ] **Scoring** (`scoring.py`): the §7 rule tree (single weak blob never HIGH;
-      HIGH needs two co-located independent signals; method-error → MEDIUM).
-- [ ] **Orchestration** (`analyze.py`) + **adapter** (rich report ↔ `StageResult`,
-      PHI-safe JSON + advisory summary) + `stage.py` (`ImageForensicsStage`).
-- [ ] Wire into the live `STAGES` list as **substantive** (NOT in
-      `FusionConfig.corroborator_stages`).
-- [ ] Fixtures (`scripts/make_image_forensics_fixtures.py`): clean scanned bill,
-      spliced amount, double-compressed (whole-image), copy-moved stamp, +
-      digital-native control. Acceptance tests (stub provider; real-provider tests
-      skip gracefully when skimage/OpenCV absent): clean → LOW, spliced → HIGH,
-      whole-image recompress → ≤ MEDIUM, copy-move → MEDIUM, native → INCONCLUSIVE.
+### image_forensics / 6.2 — detect + localization ✅ (2026-06-22)
+> Owner-scoped to detect/localize ONLY (consume the `ForensicProvider` Protocol);
+> the real classical pixel DSP was deferred to its own follow-up (see below).
+- [x] **Localization** (`localize.py`): heatmap → threshold → cv2 connected-component
+      blobs (fractional, speckle-dropped) → page points (pdfplumber top-left) via the
+      6.1 placement rect; `hot_fraction` / `iou` / `overlaps_high_value` (positional
+      amount band). Hand-checked coordinate transform.
+- [x] **Detect** (`detect.py`): run applicable methods over image-dominant pages;
+      suppress whole-image / uniform lift as `GlobalSignal`; combine co-located
+      fires (IoU; ≥2 distinct methods ⇒ `co_located` HIGH gate) → provisional
+      `TamperRegion`s; `MethodError` / `CapabilityGap` never dropped.
+- [x] Tests `tests/test_image_forensics_detect.py` (25).
+- [ ] **Copy-move** (ORB + RANSAC) — folded into the deferred DSP work below.
 
-### image_forensics / 6.3 — optional PhotoHolmes / opt-in DL + reproducibility + UI overlay
+### image_forensics / 6.3 — scoring + StageResult + fusion + wiring ✅ (2026-06-22)
+- [x] **Scoring** (`scoring.py`): the §7 rule tree (single method never HIGH;
+      HIGH needs two co-located independent signals; lone region / method-error →
+      MEDIUM; capability-gap-only / no-image-dominant → INCONCLUSIVE).
+- [x] **`stage.py`** (`ImageForensicsStage`, `core.Stage`) + adapter (rich
+      `ImageForensicsReport` ↔ `StageResult`, payload-carried bbox region).
+- [x] Wired into the live pipeline (`aggregate/jobs.py` + `test.py`) as
+      **substantive** (NOT in `FusionConfig.corroborator_stages`). Fusion needed
+      no change: HIGH originates; INCONCLUSIVE never drags down; MEDIUM +
+      provenance → HIGH.
+- [x] Tests: `tests/test_image_forensics_scoring.py` (15),
+      `tests/test_image_forensics_stage.py` (9, incl. fusion). Suite **887 / 1 skip**.
+
+> **Pipeline status:** Stage 6 is wired end-to-end and live, but it is
+> **INCONCLUSIVE on every document until the classical DSP lands** (the methods
+> raise `NotImplementedError` → capability gaps → no signal; live-safe, never a
+> false MEDIUM). The structural/image-forensics pipeline is *plumbed* end-to-end;
+> real scanned-forgery detection is gated on the DSP below.
+
+### image_forensics / DEFERRED — classical DSP + acceptance fixtures (the detection itself)
+- [ ] Implement the real method math in `ClassicalProvider.analyze` (replace the
+      `NotImplementedError` stubs): ELA, DQ/double-JPEG, JPEG-grid, noise residual,
+      **copy-move** (ORB + RANSAC) → genuine heatmaps through detect→score.
+- [ ] Acceptance fixtures on real pixels (`scripts/make_image_forensics_fixtures.py`):
+      clean scanned bill → LOW, spliced amount → HIGH, whole-image recompress →
+      ≤ MEDIUM, copy-move → MEDIUM (skip gracefully when skimage/OpenCV absent).
+- [ ] Optional `aggregate._finding_bbox` `image_forensics` branch (payload boxes
+      already in `FindingLocation` shape) + gated heatmap-overlay endpoint.
+
+### image_forensics / OPTIONAL — PhotoHolmes / opt-in DL + reproducibility + UI overlay
 - [ ] `PhotoHolmesProvider` behind the `ForensicProvider` interface (Apache-2.0
       classical methods freely; DL methods gated by `enable_dl_methods` + the VRAM
       guard; **TruFor excluded** — non-profit license). Lazy import; graceful absence.

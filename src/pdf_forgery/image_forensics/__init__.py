@@ -6,10 +6,14 @@ structure to analyse. Stage 3 (``ocr_crosscheck``) routes those pages here via
 ``routed_to="image_forensics"``; this package's name matches that route string by
 design (see ``docs/STAGE6_DESIGN.md``).
 
-Session 6.1 ships the SCAFFOLDING only — embedded-image extraction
-(:mod:`.images`), the per-page activation predicate (:mod:`.activation`), and the
-engine-agnostic forensic abstraction (:mod:`.engine`). No detectors, no scoring,
-and not yet wired into the live ``STAGES`` list.
+Status: extraction (:mod:`.images`), activation (:mod:`.activation`), the
+engine-agnostic forensic abstraction (:mod:`.engine`), the detector/localizer
+(:mod:`.detect`, :mod:`.localize`), the §7 scoring rule tree (:mod:`.scoring`),
+and the pipeline :class:`~.stage.ImageForensicsStage` are all in place and the
+stage is registered in the live pipeline as SUBSTANTIVE. The one piece still
+DEFERRED is the real classical pixel math: ``ClassicalProvider``'s methods raise
+``NotImplementedError`` (recorded as capability gaps → no signal), so the stage
+is INCONCLUSIVE on every document until that DSP lands — safe to run live.
 """
 
 from __future__ import annotations
@@ -53,6 +57,16 @@ from .localize import (  # noqa: E402
     iou,
     overlaps_high_value,
 )
+from .scoring import (  # noqa: E402
+    ImageForensicsReport,
+    RegionFinding,
+    score,
+)
+from .stage import (  # noqa: E402
+    ImageForensicsStage,
+    report_to_stage_result,
+    stage_result_to_report,
+)
 
 __all__ = [
     "STAGE_NAME",
@@ -87,4 +101,11 @@ __all__ = [
     "blob_to_page_bbox",
     "iou",
     "overlaps_high_value",
+    # Session 6.3 — scoring + Stage
+    "ImageForensicsReport",
+    "RegionFinding",
+    "score",
+    "ImageForensicsStage",
+    "report_to_stage_result",
+    "stage_result_to_report",
 ]
