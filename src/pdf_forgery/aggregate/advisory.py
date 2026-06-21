@@ -17,7 +17,7 @@ weights in the sandbox.
 ``LocalLLMAdvisoryEngine`` wraps Ollama — selected via the
 ``FDP_ADVISORY_ENGINE`` env var (see ``server.py::main``), absent by default so
 no weights are ever pulled in the sandbox.
-See ``docs/STAGE6_DESIGN.md`` §3 / §5.
+See ``docs/STAGE7_DESIGN.md`` §3 / §5.
 """
 
 from __future__ import annotations

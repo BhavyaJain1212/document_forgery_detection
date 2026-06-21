@@ -233,8 +233,8 @@ repo-root `CLAUDE.md`. Detailed task history below.
     `test_microsoft_long_invoice_ocr_crosscheck_not_high` (which had been
     failing under OOM) now PASSES. Full suite: **821 passed, 1 skipped**.
 
-## Next — Stage 4 (raster/pixel forensics)
+## Next — Stage 6 (raster/pixel forensics)
 Stage 3 hands off scanned/image-only PDFs via `routed_to="image_forensics"`.
-Stage 4 would consume `AnalysisContext.rasterized_pages()` + run ELA /
+Stage 6 would consume `AnalysisContext.rasterized_pages()` + run ELA /
 copy-move / AI-inpainting / double-JPEG-quantisation → `StageResult`. See
 `docs/FORGERY_METHODS.md` for the raster-level taxonomy.

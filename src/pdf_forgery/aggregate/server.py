@@ -1,4 +1,4 @@
-"""FastAPI app that serves the reviewer UI and the Stage 6 job API.
+"""FastAPI app that serves the reviewer UI and the Stage 7 job API.
 
 Thin transport layer only: it maps the framework-agnostic handlers in
 :mod:`pdf_forgery.aggregate.api` onto HTTP routes, serializes the descriptor-only
@@ -6,7 +6,7 @@ dataclasses to JSON / SSE, and serves the static frontend. No detection or
 fusion logic lives here.
 
 The endpoints serve the SCRUBBED descriptor view (:class:`AdvisoryInput`) and the
-advisory prose only — never raw extracted text (see ``docs/STAGE6_DESIGN.md`` §2).
+advisory prose only — never raw extracted text (see ``docs/STAGE7_DESIGN.md`` §2).
 
 Run it:  ``./.venv/bin/python -m pdf_forgery.aggregate.server``
 """

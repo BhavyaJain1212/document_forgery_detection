@@ -36,6 +36,11 @@ class AnalysisContext:
         self._pike: Any = _UNSET
         self._layouts: list["LTPage"] | None = None
         self._raster_cache: dict[int, list[bytes]] = {}
+        # Generic, stage-scoped cache. A stage stashes a derived artifact under
+        # its own namespaced key (e.g. ``"image_forensics.decoded"``) so an
+        # expensive once-per-file computation is shared across calls within a
+        # run, the same way the typed caches above are. Never holds input bytes.
+        self._stage_cache: dict[str, Any] = {}
 
     # ------------------------------------------------------------------ #
     # Inputs
@@ -49,6 +54,16 @@ class AnalysisContext:
     def path(self) -> str | None:
         """Originating filesystem path, if the context was built from a file."""
         return self._path
+
+    @property
+    def stage_cache(self) -> dict[str, Any]:
+        """Generic stage-scoped cache (namespaced keys), shared for one run.
+
+        Lets a stage memoise a derived artifact on the shared context instead of
+        recomputing it on each call. Holds derived data only — never the raw
+        input bytes. Cleared implicitly when the context is discarded.
+        """
+        return self._stage_cache
 
     # ------------------------------------------------------------------ #
     # Shared artifact: pikepdf document

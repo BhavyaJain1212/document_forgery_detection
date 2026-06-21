@@ -123,34 +123,45 @@ and hidden/invisible text. **Substantive** fusion stage. Full design contract:
       all-agree (perfect OCR mirror) → LOW score=0.
       Suite total: 662 passed, 1 skipped (up from 526).
 
-### Stage 4 — Raster / pixel forensics (next planned stage)
-Pixel-level detection: Error Level Analysis (ELA), copy-move, AI-inpainting detection,
-double-JPEG quantisation analysis. Expected to consume image bytes from
-`AnalysisContext.rasterized_pages()` and produce a `StageResult` like every other stage.
-Stage 3 already hands off scanned/image-only PDFs to this stage via
-`routed_to="image_forensics"` in the INCONCLUSIVE result. See `docs/FORGERY_METHODS.md`
-for the full taxonomy of raster-level forgery signals.
+### Stage 4 — Raster / pixel forensics → RENUMBERED to Stage 6 (`image_forensics`)
+This planned raster/pixel-forensics stage was renumbered to **Stage 6** in the
+2026-06-19 stage reconciliation (substantive detectors are now 1–4,
+`provenance_metadata` is the Stage 5 corroborator, raster forensics is Stage 6).
+Full design contract: `docs/STAGE6_DESIGN.md`; build breakdown in the
+**Stage 6 — Raster / pixel forensics** section below. NOTE the design corrects
+the earlier assumption here: forensics run on the **original embedded image
+XObject bytes**, NOT `AnalysisContext.rasterized_pages()` (the re-render
+re-compresses away the JPEG/quantisation evidence — the re-raster is for UI
+overlay only).
 
 ---
 
-## Stage 6 — Aggregate + PHI-scrub + Advisory + UI (`pdf_forgery/aggregate/`)
+## Stage 7 — Aggregate + PHI-scrub + Advisory + UI (`pdf_forgery/aggregate/`)
+
+> **Renumbered 2026-06-19:** this post-pipeline assembly/advisory/UI layer was
+> historically labelled "Stage 6"; it is now **Stage 7**. It is **not a detector /
+> not a `core.Stage`** — it runs *after* the pipeline. "Stage 6" now denotes the
+> raster/pixel-forensics **detector** (`image_forensics`, see the section at the
+> end of this file and `docs/STAGE6_DESIGN.md`). Its design contract moved to
+> `docs/STAGE7_DESIGN.md`. The `7.0/7.1/7.2/7.x` session labels below are this
+> layer's; the detector uses `image_forensics / 6.1–6.3`.
 
 Assembly / presentation layer that runs AFTER the detection pipeline, over the
 `list[StageResult]` it returns. Rolls them up into one `AggregateResult`
 (headline via the existing `fusion.fuse()`, plus a flat overlay-ready finding
 list with `bbox`), scrubs that to a descriptor-only `AdvisoryInput` at the single
 PHI boundary, and runs a swappable advisory LLM to explain it as decision
-support. Thin vertical slice; full fusion + full Stage 6 later. Full design
-contract: @docs/STAGE6_DESIGN.md.
+support. Thin vertical slice; full fusion + full Stage 7 later. Full design
+contract: @docs/STAGE7_DESIGN.md.
 
-### 6.0 — Design contract + stubs ✅ (2026-06-16)
-- [x] `docs/STAGE6_DESIGN.md` (items 1–4 + interfaces/stubs/PHI-safety/GPU note).
+### 7.0 — Design contract + stubs ✅ (2026-06-16)
+- [x] `docs/STAGE7_DESIGN.md` (items 1–4 + interfaces/stubs/PHI-safety/GPU note).
 - [x] Stub subpackage `src/pdf_forgery/aggregate/`: data models + config +
       advisory prompt text real; all logic functions raise `NotImplementedError`;
       `safe_log` real; pluggable `AdvisoryEngine` (default `StubAdvisoryEngine`,
       no GPU). Stubs compile; layer NOT yet wired to run after the pipeline.
 
-### 6.1 — Logic (CPU; no GPU), unit-tested ✅ (2026-06-16)
+### 7.1 — Logic (CPU; no GPU), unit-tested ✅ (2026-06-16)
 - [x] `aggregate.aggregate()` — delegates headline to `fusion.fuse()`; flattens
       findings into `AggregateFinding` descriptors with stable `finding_id`s
       (`"{stage}-{index}"`).
@@ -161,7 +172,7 @@ contract: @docs/STAGE6_DESIGN.md.
       before-after presence. **`bbox` always returns `None` this slice** — no
       stage payload stores per-page pixel/point dimensions, so pixel/point →
       canonical `[0,1]` normalization isn't possible without re-opening the
-      source PDF (out of the function's signature). Gap carried forward to 6.2;
+      source PDF (out of the function's signature). Gap carried forward to 7.2;
       `docs/FORGERY_METHODS.md`-literal convergence for `type` also deferred.
 - [x] `phi_scrub.to_advisory_input()` — allow-list projection to `AdvisoryInput`;
       `assert_advisory_safe()` — defensive egress check (rejects smuggled
@@ -179,11 +190,11 @@ contract: @docs/STAGE6_DESIGN.md.
       degradation when disabled / unavailable / raising / malformed. Full suite:
       717 passed, 1 skipped.
 
-### 6.2 — Reviewer UI thin slice ✅ (2026-06-17)
-Thin vertical slice of Stage 6's item-4 UI: upload → live per-stage progress →
+### 7.2 — Reviewer UI thin slice ✅ (2026-06-17)
+Thin vertical slice of Stage 7's item-4 UI: upload → live per-stage progress →
 verdict hero → streamed advisory → expandable per-stage drill-down, on the real
 five-stage pipeline. **Full fusion and the document-overlay (bbox highlight)
-view remain for the real Stage 6; Stage 4 (raster/pixel forensics) is next.**
+view remain for the real Stage 7; Stage 6 (raster/pixel forensics) is next.**
 - [x] `pipeline.run_pipeline(..., on_progress=cb)` — optional per-stage progress
       callback (`(stage, "running"|"done"|"error")`); a raising callback is
       suppressed so reporting never breaks the run.
@@ -215,7 +226,7 @@ view remain for the real Stage 6; Stage 4 (raster/pixel forensics) is next.**
       Acrobat_Demo→HIGH 95, clear invoice→MEDIUM 65). Full suite: 726 passed,
       1 skipped. Run the app: `./.venv/bin/python -m pdf_forgery.aggregate.server`.
 
-### 6.x — Remaining for the real Stage 6 (deferred)
+### 7.x — Remaining for the real Stage 7 (deferred)
 - [ ] Document-overlay view: render the page + draw `finding.bbox` boxes. Blocked
       on populating `bbox` (a stage payload must carry per-page pixel/point dims,
       or `_finding_bbox` must widen to re-open the source PDF). Coords already
@@ -224,3 +235,76 @@ view remain for the real Stage 6; Stage 4 (raster/pixel forensics) is next.**
 - [ ] Durable jobs (Celery/Redis/Postgres) replacing the in-memory `JobManager`.
 - [ ] Gated, audit-logged evidence endpoint for raw before→after (the one path
       raw text is allowed, authenticated only).
+
+---
+
+## Stage 6 — Raster / pixel forensics (`pdf_forgery/image_forensics/`)
+
+Pixel-level tamper detection for scanned / photographed bills — the destination
+of Stage 3 (`ocr_crosscheck`)'s `routed_to="image_forensics"` hand-off. A
+`core.Stage` (`run(bytes, ctx) -> StageResult`, read-only, never raises);
+**SUBSTANTIVE** on image-dominant pages, INCONCLUSIVE on digital-native pages.
+Full design contract: `docs/STAGE6_DESIGN.md`. Stage name / package =
+`image_forensics` (matches the route string).
+
+### image_forensics / 6.0 — design contract ✅ (2026-06-19)
+- [x] `docs/STAGE6_DESIGN.md` — all 9 locked decisions + method table + scoring
+      rule tree + activation predicate + test fixtures. **Design only — no code**
+      this session (per owner). PhotoHolmes verified (Apache-2.0 base, but pulls
+      torch + TruFor non-profit-only → optional provider, classical default).
+
+### image_forensics / 6.1 — extraction + activation + engine scaffolding ✅ (2026-06-19)
+Scaffolding only — the classical method *math* and all scoring were deliberately
+deferred to 6.2/6.3 (the `analyze` bodies raise `NotImplementedError`).
+- [x] `config.py` (`ImageForensicsConfig`: all thresholds/bands/toggles, frozen;
+      nothing magic outside it). `DecodedImage` lives in `images.py`; `ForensicMap`
+      + `ForensicProvenance` in `engine.py` (`ImageForensicsReport` is a 6.2 item).
+- [x] **Pixel source** (`images.py`, not `source.py`): locate image XObjects via
+      pikepdf (recurse one level into form XObjects); decode DCTDecode (**raw JPEG
+      bytes kept verbatim, no re-encode**) / FlateDecode / Indexed / CMYK→RGB +
+      `/SMask`; map XObject → page rectangle via the content-stream CTM (top-left
+      points). Salted content hash. Cached on `ctx.stage_cache`. Never raises.
+      (JPXDecode decode path lands when a J2K fixture exists.)
+- [x] **Engine abstraction** (`engine.py`): `ForensicMethod` + `ForensicProvider`
+      protocols + `StubForensicProvider` (deterministic, CPU) + `ClassicalProvider`
+      (default) + `PhotoHolmesProvider` (scaffolded early; full wrap stays a 6.3
+      item). Mirrors `OCREngine`.
+- [~] **Classical methods**: ELA / DQ / JPEG-grid / noise-residual / copy-move are
+      DECLARED on `ClassicalProvider` with real `applicable()` gating; `analyze()`
+      math deferred to 6.2/6.3.
+- [x] **Activation** (`activation.py`): per-page image-dominant predicate (text
+      floor reusing `min_embedded_words`, OR image-area dominance).
+- [x] Unit tests (`tests/test_image_forensics.py`, 21): decode paths (JPEG
+      round-trip + raw bytes, CMYK, Indexed), CTM placement, activation boundaries,
+      stub determinism, engine availability fallback. Suite **843 passed, 1 skip**.
+
+### image_forensics / 6.2 — copy-move + localization + scoring + orchestration + wiring + fixtures
+- [ ] **Copy-move** (`methods/copymove.py`): OpenCV ORB + RANSAC affine; conservative
+      (min match count, non-trivial offset; never HIGH alone).
+- [ ] **Localization** (`localize.py`): heatmap → threshold → connected-component
+      blobs → page points (pdfplumber top-left) + page dims; `aggregate._finding_bbox`
+      gains an `image_forensics` branch → canonical `[0,1]` `BBox`.
+- [ ] **Scoring** (`scoring.py`): the §7 rule tree (single weak blob never HIGH;
+      HIGH needs two co-located independent signals; method-error → MEDIUM).
+- [ ] **Orchestration** (`analyze.py`) + **adapter** (rich report ↔ `StageResult`,
+      PHI-safe JSON + advisory summary) + `stage.py` (`ImageForensicsStage`).
+- [ ] Wire into the live `STAGES` list as **substantive** (NOT in
+      `FusionConfig.corroborator_stages`).
+- [ ] Fixtures (`scripts/make_image_forensics_fixtures.py`): clean scanned bill,
+      spliced amount, double-compressed (whole-image), copy-moved stamp, +
+      digital-native control. Acceptance tests (stub provider; real-provider tests
+      skip gracefully when skimage/OpenCV absent): clean → LOW, spliced → HIGH,
+      whole-image recompress → ≤ MEDIUM, copy-move → MEDIUM, native → INCONCLUSIVE.
+
+### image_forensics / 6.3 — optional PhotoHolmes / opt-in DL + reproducibility + UI overlay
+- [ ] `PhotoHolmesProvider` behind the `ForensicProvider` interface (Apache-2.0
+      classical methods freely; DL methods gated by `enable_dl_methods` + the VRAM
+      guard; **TruFor excluded** — non-profit license). Lazy import; graceful absence.
+- [ ] VRAM guard (`torch.cuda.mem_get_info` / `pynvml` ≥ `dl_min_free_vram_mb`)
+      so DL never contends with PaddleOCR/Ollama; degrade to classical + note.
+- [ ] `ForensicProvenance` reproducibility manifest (provider/versions/device +
+      per-method params + per-image decode-path/colorspace/dims/salted hash).
+- [ ] Gated heatmap-overlay PNG endpoint (PHI) reusing `aggregate/overlay.py`'s
+      render-lock pattern; never on the scrubbed advisory channel.
+- [ ] Drop a real flatbed-scanned untouched bill at `test_pdf's/` for a real-data
+      precision test (synthetic clean fixture is not a substitute).

@@ -6,7 +6,7 @@ re-judge the verdict). :func:`build_advisory_messages` renders it for a
 concrete :class:`AdvisoryInput`, injecting pre-grouped findings + a per-type
 glossary so the model explains rather than repeats.
 
-See ``docs/STAGE6_DESIGN.md`` §3.
+See ``docs/STAGE7_DESIGN.md`` §3.
 """
 
 from __future__ import annotations

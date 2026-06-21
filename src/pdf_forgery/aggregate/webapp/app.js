@@ -1,5 +1,5 @@
 /* Claim Document Review — reviewer UI controller.
-   Talks to the Stage 6 job API: upload -> poll per-stage progress -> verdict
+   Talks to the Stage 7 job API: upload -> poll per-stage progress -> verdict
    hero (from the scrubbed result) -> streamed advisory (SSE) -> drill-down.
    Everything it renders is a descriptor or advisory prose — never raw text. */
 

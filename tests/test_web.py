@@ -1,4 +1,4 @@
-"""Web layer (Stage 6.2): job manager, API handlers, FastAPI server, SSE.
+"""Web layer (Stage 7.2): job manager, API handlers, FastAPI server, SSE.
 
 These are kept fast by stubbing the detection stages — the real five-stage
 pipeline (PaddleOCR etc.) is exercised by the acceptance tests, not here. The

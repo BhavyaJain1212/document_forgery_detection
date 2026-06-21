@@ -1,8 +1,8 @@
-"""Configuration for the Stage 6 aggregate / advisory layer.
+"""Configuration for the Stage 7 aggregate / advisory layer.
 
 Every tunable lives here — nothing magic is hard-coded outside it. The headline
 fusion is delegated to the existing :class:`~pdf_forgery.fusion.FusionConfig`
-(Stage 6 adds no new fusion math this slice); this config wraps it and adds the
+(Stage 7 adds no new fusion math this slice); this config wraps it and adds the
 advisory toggles and the allow-list reference.
 """
 

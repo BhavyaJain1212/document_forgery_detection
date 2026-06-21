@@ -1,7 +1,7 @@
 """The HTTP contract the reviewer UI consumes, backed by the in-memory runner.
 
 Defines the request/response SHAPES (dataclasses) and the framework-agnostic
-handlers for the non-blocking job API in ``docs/STAGE6_DESIGN.md`` §4. The
+handlers for the non-blocking job API in ``docs/STAGE7_DESIGN.md`` §4. The
 handlers operate on a module-level :class:`~pdf_forgery.aggregate.jobs.JobManager`;
 ``server.py`` maps them onto FastAPI routes (and serializes the dataclasses to
 JSON / SSE), so this module imports no web framework.

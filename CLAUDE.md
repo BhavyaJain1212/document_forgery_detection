@@ -283,8 +283,11 @@ pair: `extract.text` + `extract.normalize` → `diff.textdiff` and
 > - `src/pdf_forgery/provenance_metadata/CLAUDE.md` — provenance stage
 > - `src/pdf_forgery/ocr_crosscheck/CLAUDE.md` — Stage 3 OCR↔embedded cross-check
 >   (implemented; contract in `docs/STAGE3_DESIGN.md`)
-> - `src/pdf_forgery/aggregate/CLAUDE.md` — Stage 6 aggregate + PHI-scrub + advisory + UI
->   (DESIGN + STUBS only so far; contract in `docs/STAGE6_DESIGN.md`)
+> - `src/pdf_forgery/image_forensics/CLAUDE.md` — Stage 6 raster/pixel forensics
+>   (6.1 scaffolding done: extraction + activation + engine abstraction; no
+>   scoring / not yet wired. Contract in `docs/STAGE6_DESIGN.md`)
+> - `src/pdf_forgery/aggregate/CLAUDE.md` — Stage 7 aggregate + PHI-scrub + advisory + UI
+>   (post-pipeline assembly layer, not a `core.Stage`; contract in `docs/STAGE7_DESIGN.md`)
 
 ### Where things stand
 All stages are implemented and green. Pipeline:

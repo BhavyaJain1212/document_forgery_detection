@@ -1,14 +1,14 @@
-# aggregate — working notes (Stage 6)
+# aggregate — working notes (Stage 7)
 
-Stage 6 = aggregation + PHI-scrub boundary + advisory + UI. It is NOT a detector
+Stage 7 = aggregation + PHI-scrub boundary + advisory + UI. It is NOT a detector
 and NOT a `core.Stage`; it runs AFTER the pipeline, over the `list[StageResult]`
-that `run_pipeline()` returns. Canonical design contract: `docs/STAGE6_DESIGN.md`.
+that `run_pipeline()` returns. Canonical design contract: `docs/STAGE7_DESIGN.md`.
 Cross-cutting spec / layout / status: repo-root `CLAUDE.md`.
 
-- [x] **Stage 6 / Session 6.0 — design contract + stubs** (2026-06-16)
+- [x] **Stage 7 / Session 7.0 — design contract + stubs** (2026-06-16)
   - Goal: prove the pipe end-to-end (aggregate → PHI-scrub → advisory → UI) on
-    the detectors that exist today, THIN. Full fusion + full Stage 6 later.
-  - [x] `docs/STAGE6_DESIGN.md` — items 1–4 fully specified:
+    the detectors that exist today, THIN. Full fusion + full Stage 7 later.
+  - [x] `docs/STAGE7_DESIGN.md` — items 1–4 fully specified:
     (1) `AggregateResult` roll-up — headline via existing `fusion.fuse()`
     (minimal fusion, full deferred + config-exposed), flat `AggregateFinding`
     list with stable `finding_id` + descriptor set + **`bbox` carried NOW**
@@ -38,7 +38,7 @@ Cross-cutting spec / layout / status: repo-root `CLAUDE.md`.
       boundary). `prompts.py` — real `SYSTEM_PROMPT` / `USER_PROMPT_TEMPLATE`
       + `build_advisory_messages()` stub.
     - `advisory.py` — `Message`, `AdvisoryEngine` Protocol, `StubAdvisoryEngine`
-      (deterministic, NO GPU — the 6.1 default), `LocalLLMAdvisoryEngine` (GPU,
+      (deterministic, NO GPU — the 7.1 default), `LocalLLMAdvisoryEngine` (GPU,
       swappable, graceful absence via `is_available()`), `generate_advisory()`.
     - `api.py` — HTTP contract dataclasses + stub handlers (no web framework
       imported this slice). `safe_log.py` — `finding_log_record` / `salted_hash`.
@@ -46,19 +46,19 @@ Cross-cutting spec / layout / status: repo-root `CLAUDE.md`.
     load; sits behind the swappable `AdvisoryEngine` like Stage 3's `OCREngine`.
     Never download weights in the sandbox.
   - [x] Stubs compile; **no logic implemented**; layer NOT yet wired to run after
-    the pipeline (wiring = 6.2). `docs/TODO.md` updated with 6.1 / 6.2.
+    the pipeline (wiring = 7.2). `docs/TODO.md` updated with 7.1 / 7.2.
 
-## Next — 6.1 (logic) then 6.2 (engine + wiring + UI)
-6.1: implement `aggregate()` + flatten/bbox extractors + `to_advisory_input` +
+## Next — 7.1 (logic) then 7.2 (engine + wiring + UI)
+7.1: implement `aggregate()` + flatten/bbox extractors + `to_advisory_input` +
 `assert_advisory_safe` + `build_advisory_messages` + `StubAdvisoryEngine` +
-`generate_advisory`; unit tests incl. a PHI-leak assertion. 6.2: wire after the
+`generate_advisory`; unit tests incl. a PHI-leak assertion. 7.2: wire after the
 pipeline (e.g. in `test.py`), `LocalLLMAdvisoryEngine`, API handlers, gated
-evidence endpoint. See `docs/STAGE6_DESIGN.md` §6.
+evidence endpoint. See `docs/STAGE7_DESIGN.md` §6.
 
-- [x] **Stage 6 / Session 6.1 — CPU logic implemented + unit-tested** (2026-06-16)
-  - Scope explicitly confirmed with the owner: 6.1 only (no FastAPI/Celery/real
-    LLM/SSE this session — that's 6.2). Owner also named **Ollama** (already
-    installed) as the chosen 6.2 serving backend for `LocalLLMAdvisoryEngine`,
+- [x] **Stage 7 / Session 7.1 — CPU logic implemented + unit-tested** (2026-06-16)
+  - Scope explicitly confirmed with the owner: 7.1 only (no FastAPI/Celery/real
+    LLM/SSE this session — that's 7.2). Owner also named **Ollama** (already
+    installed) as the chosen 7.2 serving backend for `LocalLLMAdvisoryEngine`,
     over vLLM — documented in `advisory.py`'s docstring, not implemented yet.
   - [x] `aggregate.aggregate()` — delegates the headline (tier/score/reasons/
     contributing_stages/notes) to `fusion.fuse()`; flattens every stage's
@@ -94,7 +94,7 @@ evidence endpoint. See `docs/STAGE6_DESIGN.md` §6.
     grounded summary). `generate_advisory()` validates that every cited
     `finding_id` actually exists in the input and degrades to the same
     templated fallback (never raises) when disabled, unavailable, raising, or
-    citing unknown ids. `LocalLLMAdvisoryEngine` is still a 6.2
+    citing unknown ids. `LocalLLMAdvisoryEngine` is still a 7.2
     `NotImplementedError` stub; its docstring now names the Ollama HTTP API
     (`GET /api/tags`, `POST /api/chat`) as the planned wrap.
   - [x] `tests/test_aggregate.py` (25 cases, all green): roll-up parity with
@@ -108,17 +108,17 @@ evidence endpoint. See `docs/STAGE6_DESIGN.md` §6.
     malformed-citation paths.
   - Full suite after this change: **717 passed, 1 skipped** (the skip is the
     pristine-invoice precision baseline, unrelated and pre-existing).
-  - **Known gap to revisit in 6.2 or sooner:** `bbox` is part of the
+  - **Known gap to revisit in 7.2 or sooner:** `bbox` is part of the
     `AggregateFinding`/`AdvisoryFinding` contract and the frontend overlay
     design assumes it's populated, but nothing currently produces it. Needs a
     decision: extend stage payloads with page pixel/point dimensions, or widen
     `_finding_bbox`'s signature to accept the source PDF/page sizes.
 
-- [x] **Stage 6 / Session 6.2 — reviewer UI thin slice** (2026-06-17)
+- [x] **Stage 7 / Session 7.2 — reviewer UI thin slice** (2026-06-17)
   - Scope: the item-4 UI as a THIN vertical slice on the real five-stage
     pipeline — upload → live per-stage progress → verdict hero → streamed
     advisory → expandable per-stage drill-down. Full fusion + the document
-    overlay (bbox highlight) view stay deferred to the real Stage 6; Stage 4
+    overlay (bbox highlight) view stay deferred to the real Stage 7; Stage 4
     (raster/pixel forensics) is the next stage.
   - **No Celery/Redis/Postgres this slice.** `jobs.JobManager` is an in-memory,
     thread-backed stand-in: `submit()` returns immediately (invariant #8), a

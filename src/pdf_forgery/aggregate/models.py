@@ -1,4 +1,4 @@
-"""Data contracts for Stage 6 — aggregation, the PHI boundary, and advisory.
+"""Data contracts for Stage 7 — aggregation, the PHI boundary, and advisory.
 
 These are PURE data (frozen dataclasses). They carry no logic. Two families:
 
@@ -14,7 +14,7 @@ These are PURE data (frozen dataclasses). They carry no logic. Two families:
   identifiers, or document content — only the fields in
   :data:`ADVISORY_FINDING_ALLOWLIST`.
 
-The full design is in ``docs/STAGE6_DESIGN.md``.
+The full design is in ``docs/STAGE7_DESIGN.md``.
 """
 
 from __future__ import annotations
@@ -146,7 +146,7 @@ class AdvisoryInput:
     """The ONLY object that may cross toward the advisory LLM or the frontend.
 
     Descriptors only — see :data:`ADVISORY_FINDING_ALLOWLIST` and
-    ``docs/STAGE6_DESIGN.md`` §2 for the enumerated forbidden set.
+    ``docs/STAGE7_DESIGN.md`` §2 for the enumerated forbidden set.
     """
 
     tier: ConfidenceTier

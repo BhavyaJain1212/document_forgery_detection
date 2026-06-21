@@ -1,7 +1,7 @@
 """Roll the per-stage results up into one :class:`AggregateResult`.
 
 The headline is computed by delegating to the existing
-:func:`pdf_forgery.fusion.fuse` (Stage 6 adds no new fusion math); this module
+:func:`pdf_forgery.fusion.fuse` (Stage 7 adds no new fusion math); this module
 then flattens findings into descriptors, assigns stable ``finding_id``\\s, and
 attaches the canonical-space ``bbox`` for each so the future overlay is a pure
 render job.

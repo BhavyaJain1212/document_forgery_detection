@@ -1,4 +1,4 @@
-# Stage 6 — Advisory readability upgrade (implementation brief for Sonnet)
+# Stage 7 — Advisory readability upgrade (implementation brief for Sonnet)
 
 **Audience:** the engineer implementing this (Sonnet).
 **Goal:** make the reviewer-facing advisory genuinely readable — fix the run-on

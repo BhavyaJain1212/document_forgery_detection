@@ -1,4 +1,4 @@
-# Stage 6 — Reviewer-UI + Advisory Fixes (implementation plan)
+# Stage 7 — Reviewer-UI + Advisory Fixes (implementation plan)
 
 **Status: PLAN ONLY — not yet implemented.** Hand this to an implementer
 session. Three reviewer-reported problems against the live UI
@@ -15,7 +15,7 @@ This plan stays inside the existing thin-slice architecture (in-memory
 **not** touch fusion math, stage detectors, or the PHI allow-list semantics. All
 copy stays decision-support, never an absolute verdict (design §3/§4).
 
-Read first: `docs/STAGE6_DESIGN.md` (the contract) and
+Read first: `docs/STAGE7_DESIGN.md` (the contract) and
 `src/pdf_forgery/aggregate/CLAUDE.md` (session history). Run the suite with
 `./.venv/bin/python -m pytest --ignore=tests/test_microsoft_pdf.py`.
 

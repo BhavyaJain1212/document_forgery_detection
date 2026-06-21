@@ -1,6 +1,6 @@
 """In-memory job manager + background pipeline runner for the reviewer UI.
 
-The thin Stage 6 slice has no Celery/Redis/Postgres yet (those belong to the
+The thin Stage 7 slice has no Celery/Redis/Postgres yet (those belong to the
 full build). This module is the minimal stand-in: it accepts an uploaded PDF,
 runs the five detection stages in a background thread, reports live per-stage
 progress, then rolls the results up via :func:`~pdf_forgery.aggregate.aggregate`

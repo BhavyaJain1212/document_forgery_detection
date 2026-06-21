@@ -9,7 +9,7 @@ field reaches the far side only because it was affirmatively cleared as non-PHI.
 :func:`assert_advisory_safe` is the defensive post-check run before any egress
 (and in tests): it raises if anything outside the allow-list is present, or any
 descriptor string looks like leaked free-text content rather than a short
-canonical token. See ``docs/STAGE6_DESIGN.md`` §2.
+canonical token. See ``docs/STAGE7_DESIGN.md`` §2.
 """
 
 from __future__ import annotations

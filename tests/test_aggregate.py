@@ -1,4 +1,4 @@
-"""Stage 6.1 — aggregate() + PHI-scrub boundary + advisory (CPU-only logic)."""
+"""Stage 7.1 — aggregate() + PHI-scrub boundary + advisory (CPU-only logic)."""
 
 from __future__ import annotations
 

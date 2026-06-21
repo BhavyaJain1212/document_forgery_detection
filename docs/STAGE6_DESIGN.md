@@ -1,426 +1,460 @@
-# Stage 6 — Aggregation + PHI-scrub boundary + Advisory + UI (thin slice)
+# Stage 6 — Raster / Pixel Forensics (`pdf_forgery/image_forensics/`)
 
-**Status: DESIGN CONTRACT (Session 6.0). No logic implemented this session —
-data models / config / interfaces + the advisory prompt are real; every logic
-function is a `NotImplementedError` stub.** Implementation lands in 6.1 / 6.2
-(see `docs/TODO.md`).
+> **Status: DESIGN ONLY (Session 6.0, 2026-06-19).** No detector code written
+> this session. This document is the canonical contract; the 6.1–6.3
+> implementation breakdown lives in `docs/TODO.md`.
 
-Stage 6 is **not a detector**. The five stages before it
-(`revision_recovery`, `font_forensics`, `invoice_arithmetic`,
-`provenance_metadata`, `ocr_crosscheck`) each emit a
-`core.StageResult`; `fusion.fuse()` already collapses those into one advisory
-headline. Stage 6 is the **assembly + presentation layer** that turns that
-into something a human reviewer (and a frontend) can consume safely:
+Pixel-level tamper detection for **scanned / photographed bills** — the pages
+where there is no reliable embedded text or font structure for the digital-native
+detectors (Stages 1–4) to analyse. Stage 3 (`ocr_crosscheck`) already detects the
+text-sparse / scanned case and emits `routed_to="image_forensics"`; **Stage 6 is
+the destination of that hand-off.** Its package name and `STAGE_NAME` are
+therefore exactly `image_forensics`, so the route string and the stage identity
+match.
 
-1. **Aggregate** — roll the per-stage `StageResult`s up into ONE
-   `AggregateResult`: a headline tier/score, the per-stage results, and a *flat*
-   list of findings each carrying a stable `finding_id` and a **`bbox`** so a
-   future document-overlay is a pure rendering job.
-2. **PHI-scrub boundary** — project the `AggregateResult` down to an
-   `AdvisoryInput` of finding **descriptors only** (an explicit allow-list).
-   This is the trust boundary: nothing else may cross toward the LLM or the
-   frontend. NEVER raw extracted text, patient identifiers, or document content.
-3. **Advisory** — a swappable local LLM that explains, in plain language and
-   grounded ONLY in the supplied descriptors (citing `finding_id`s), why the
-   document was flagged or not — without ever re-judging the verdict.
-4. **UI** — the reviewer-facing information architecture and the API contract
-   the frontend consumes. Copy is decision-support, never an absolute verdict.
-
-This is a **THIN vertical slice**: minimal fusion (delegated to the existing
-`fusion.fuse()`), descriptor-only boundary, one advisory prompt, one API shape.
-Full fusion (cross-stage geometric correlation, dedup, calibration curve) and
-the full Stage 6 build come later.
+Stage 6 is a `core.Stage` like every other detector: `run(pdf_bytes, ctx) ->
+StageResult`, read-only, never raises, shares the one `AnalysisContext`. It is a
+**SUBSTANTIVE** fusion stage on image-dominant pages (it can originate a verdict);
+it returns INCONCLUSIVE — i.e. "no signal" to fusion — on digital-native pages.
 
 ---
 
-## 0. Where Stage 6 sits
+## 0. Numbering note (read first)
 
-- Subpackage: `src/pdf_forgery/aggregate/`, downstream of every detection stage.
-  Direction stays one-way: `aggregate → {core, fusion, stages' adapters}`, never
-  the reverse. (Doc named `STAGE6` ↔ package `aggregate`, mirroring the
-  established `STAGE3` ↔ `ocr_crosscheck` naming.)
-- It does **not** implement a `core.Stage`; it runs *after* the pipeline. Input
-  is the `list[StageResult]` that `run_pipeline()` already returns.
-- **Headline fusion is delegated, not reinvented.** `aggregate()` calls the
-  existing `fusion.fuse()` (the project's evidence-weighted, max-severity-with-
-  corroboration rule) for the headline tier/score, then attaches the flat
-  finding list + bbox + descriptors. "Minimal fusion only / full fusion
-  deferred" means Stage 6 adds NO new fusion math this slice — it wraps the
-  current rule via `AggregateConfig.fusion`.
-- **GPU note.** The advisory LLM is the only GPU-bound part. It contends with
-  PaddleOCR (Stage 3) **only under concurrent load**; in the normal pipeline OCR
-  has finished before advisory starts. The advisory model sits behind a
-  swappable `AdvisoryEngine` interface (exactly like Stage 3's `OCREngine`), so
-  the GPU backend can be swapped, queued, or replaced by the deterministic
-  `StubAdvisoryEngine` (no GPU) without touching callers.
-- **PHI-safe logging** (project invariant #10): structured logs carry finding
-  **descriptors** only (`finding_id`, `stage`, `type`, `tier`, `score`,
-  `token_class`, `page`, `bbox`) — never `before`/`after` text, never `reason`
-  strings that may quote content. All logging goes through `safe_log`.
+This project's stage numbers were reconciled in this session:
 
----
-
-## 1. AggregateResult schema (item 1)
-
-The roll-up of the per-stage results into one object. It lives **server-side,
-behind the PHI boundary** — it still references the rich `StageResult`s (whose
-findings carry raw before/after text the gated reviewer-evidence view needs).
-
-```python
-@dataclass(frozen=True)
-class BBox:
-    """Region of a finding on its page, in the CANONICAL overlay space:
-    normalized [0,1], top-left origin, page-relative. (x0,y0)=top-left,
-    (x1,y1)=bottom-right. None when a stage cannot localise a finding yet."""
-    x0: float; y0: float; x1: float; y1: float
-
-@dataclass(frozen=True)
-class AggregateFinding:
-    """One finding, flattened across stages, as a DESCRIPTOR (no raw text)."""
-    finding_id: str               # stable, deterministic: f"{stage}-{n}"
-    stage: str                    # originating stage name
-    type: str                     # finding/forgery-method kind (see note)
-    tier: ConfidenceTier
-    score: int | None
-    token_class: str | None       # "amount" / "date" / "id" / "prose" / None
-    page: int | None
-    bbox: BBox | None             # canonical normalized region (see §1a)
-
-@dataclass(frozen=True)
-class AggregateResult:
-    tier: ConfidenceTier                       # headline (from fusion.fuse())
-    score: int | None
-    stage_results: tuple[StageResult, ...]     # rich per-stage (server-side only)
-    findings: tuple[AggregateFinding, ...]     # flat descriptor list
-    reasons: tuple[str, ...]                   # how the headline was reached
-    contributing_stages: tuple[str, ...]
-    notes: tuple[str, ...]                     # diagnostics (e.g. failed stages)
-```
-
-### 1a. The `bbox` decision — carried NOW even though nothing renders it
-
-The future document-overlay (highlight each finding on the rendered page) must
-be a **pure rendering job** — read `finding.page` + `finding.bbox`, draw a box.
-So `bbox` is in the contract from this slice forward.
-
-- **Canonical space = normalized `[0,1]`, top-left origin, page-relative.** Every
-  stage natively reports a different space (`ocr_crosscheck`: pixel space at
-  `render_dpi`; `revision_recovery` / `font_forensics`: PDF points, bottom-left
-  origin). Normalizing to `[0,1]` per page makes the overlay independent of DPI
-  and page size — the frontend multiplies by its rendered page dimensions.
-- **Who fills it:** a small per-stage bbox extractor in `aggregate.py`
-  (`_finding_bbox(stage_result, finding)`) converts each stage's native geometry
-  into the canonical box. For this slice it returns `None` for stages that don't
-  yet surface geometry; `ocr_crosscheck` is the first to populate it (its
-  `Divergence.embedded[].bbox` / `ocr.bbox` are already pixel-space rects — divide
-  by the page pixel size from `RenderProvenance.render_dpi`). The contract is
-  fixed now; backfilling each stage's extractor is incremental and does not
-  change any consumer.
-- `bbox` is **geometry, not PHI** — it carries no document content, so it is
-  allowed across the boundary (§2).
-
-### 1b. The `type` and `token_class` descriptors
-
-- `type` — the finding/forgery-method kind, a short stable string supplied per
-  stage (e.g. `ocr_crosscheck` → `mismatch` / `embedded_only` / `ocr_only`;
-  `revision_recovery` → `content_edit` / `field_edit` / …). It should converge on
-  the canonical literals in `docs/FORGERY_METHODS.md`; until each adapter exposes
-  one, the extractor derives it from the stage payload. Not free text — an enum-
-  like token a UI can group/filter on.
-- `token_class` — the high-value class from the existing classifier, mapped from
-  `Finding.high_value` (`"amount"`/`"date"`/`"id"`) or `None`/`"prose"`. Lets the
-  UI and advisory weight an altered amount over altered prose without ever seeing
-  the value.
-
-### 1c. Minimal fusion (config-exposed; full fusion deferred)
-
-`aggregate()` computes the headline by calling `fusion.fuse(stage_results,
-config.fusion)` and copying `tier` / `score` / `reasons` / `contributing_stages`
-/ `notes` from the returned `FusedAssessment`. No new fusion math is added here.
-`AggregateConfig.fusion` exposes the existing `FusionConfig` (corroborator
-stages, escalation bonus, bands). **Deferred to full Stage 6:** geometric
-correlation of findings across stages (same region flagged by two stages → one
-fused finding), cross-stage dedup, and a calibration curve over the headline
-score.
-
----
-
-## 2. The PHI-scrub boundary (item 2)
-
-The single trust boundary in the system. **`AdvisoryInput` is the ONLY object
-that may cross toward the LLM or the frontend.** It is defined as an explicit
-**allow-list**, not a deny-list: a field exists in `AdvisoryInput` only if it has
-been affirmatively cleared as non-PHI. Adding a field to a stage's rich result
-can never leak it, because nothing downstream reads the rich result.
-
-```python
-# The allow-list, as code: these fields and ONLY these may cross.
-ADVISORY_FINDING_ALLOWLIST = (
-    "finding_id", "stage", "type", "tier", "score", "token_class", "page", "bbox",
-)
-
-@dataclass(frozen=True)
-class AdvisoryFinding:
-    finding_id: str
-    stage: str
-    type: str
-    tier: ConfidenceTier
-    score: int | None
-    token_class: str | None
-    page: int | None
-    bbox: BBox | None          # region id — geometry, not content
-
-@dataclass(frozen=True)
-class AdvisoryStage:
-    stage: str
-    tier: ConfidenceTier
-    score: int | None
-    ok: bool
-
-@dataclass(frozen=True)
-class AdvisoryInput:
-    tier: ConfidenceTier                       # headline
-    score: int | None
-    stages: tuple[AdvisoryStage, ...]
-    findings: tuple[AdvisoryFinding, ...]
-    notes: tuple[str, ...]                     # diagnostics only (no content)
-```
-
-### What is FORBIDDEN to cross (enumerated for reviewers)
-
-- **Raw extracted text** — `Finding.before` / `Finding.after` / `Evidence.*`,
-  any OCR / pdfminer word text, any document string.
-- **Stage `reason` / `summary` strings** — these frequently quote before→after
-  text, so they are NOT allow-listed; the advisory regenerates prose from
-  descriptors instead.
-- **Patient / claimant identifiers, policy/claim numbers, provider IDs** — note
-  that `token_class="id"` (the *class*) is allowed; the ID *value* is not.
-- **The rich `payload`** (pikepdf objects, layouts, divergence text, file path).
-
-`token_class` carries the *kind* of a high-value field ("an amount changed"),
-never the value ("5,000 → 50,000"). That distinction is the whole boundary.
-
-### Enforcement
-
-- `phi_scrub.to_advisory_input(aggregate)` constructs `AdvisoryFinding`s by
-  copying ONLY the allow-listed fields from each `AggregateFinding`. Because
-  `AggregateFinding` is already a descriptor (it never held raw text), the scrub
-  is a projection, but the **separate `AdvisoryFinding` type is the enforced
-  contract** — if `AggregateFinding` ever gains a content field, it still cannot
-  reach the LLM/frontend unless someone explicitly adds it to the allow-list.
-- `phi_scrub.assert_advisory_safe(advisory_input)` is a defensive post-check that
-  walks the object and raises if any field outside the allow-list is present or
-  any string looks like leaked content (used in tests and before any egress).
-
-### Where the raw before→after text lives
-
-The detectors' core promise — show the reviewer the exact before→after text —
-is **not** abandoned; it simply does not cross *this* boundary. Raw evidence
-stays server-side in the `StageResult.payload`s referenced by `AggregateResult`,
-reachable only through a **separate, authenticated, audit-logged evidence
-endpoint** (`GET /v1/jobs/{id}/findings/{finding_id}/evidence`, out of scope for
-this slice). The frontend's default result view and the advisory LLM see
-descriptors only.
-
----
-
-## 3. The advisory LLM prompt (item 3)
-
-A local model that produces **decision-support** text grounded ONLY in the
-`AdvisoryInput`. It explains; it never decides. Hard constraints baked into the
-system prompt:
-
-- Ground every statement in the supplied findings; **cite `finding_id`s**.
-- **Never introduce a claim not present in the findings** (no invented amounts,
-  names, page contents — it has none).
-- **Never override, re-judge, raise, or lower the verdict.** Report the headline
-  tier as given. State **INCONCLUSIVE honestly** ("these methods could not
-  assess this document"), never dress it up as clean or as suspicious.
-- Decision-support tone: "a reviewer should…", "this warrants review because…";
-  the system does not make final determinations.
-
-### System prompt (verbatim — `prompts.SYSTEM_PROMPT`)
-
-```
-You are a decision-support assistant for a human fraud reviewer examining a
-health-insurance claim document. An automated forgery-detection pipeline has
-already analysed the document and produced a set of findings. Your ONLY job is
-to explain those findings in plain, measured language so the reviewer can decide
-what to do next.
-
-Strict rules:
-1. Ground every statement ONLY in the findings provided in the user message.
-   Cite the finding_id(s) you are referring to, e.g. (ocr_crosscheck-0).
-2. You have NOT been given the document, any names, amounts, dates, or
-   identifiers. Do not guess, infer, or invent any such content. If a finding
-   says an "amount" token diverged, you may say "an amount field was flagged" —
-   you must NOT state what the amount was.
-3. Do NOT override, re-judge, raise, or lower the verdict. Report the overall
-   tier exactly as given. If it is INCONCLUSIVE, say plainly that these methods
-   could not assess the document — do not imply it is clean or forged.
-4. This is advisory only. A human reviewer makes the final decision. Use
-   decision-support phrasing ("a reviewer should verify…"), never absolute
-   claims ("this document is fraudulent").
-5. Be concise. No preamble, no restating these rules.
-
-Respond as JSON matching this shape:
-{
-  "summary": "<2-4 sentence plain-language overview of why the document was or
-              was not flagged, naming the overall tier>",
-  "tier_statement": "<one honest sentence stating the overall tier and what it
-                      means, especially if INCONCLUSIVE>",
-  "finding_rationales": [
-    {"finding_id": "<id>", "rationale": "<one sentence, grounded in this finding
-                                          only, citing its id>"}
-  ]
-}
-```
-
-### User prompt (template — `prompts.USER_PROMPT_TEMPLATE`)
-
-The serialized `AdvisoryInput` (descriptors only) injected as JSON:
-
-```
-Overall tier: {tier} (score: {score})
-
-Per-stage results:
-{stages_block}          # one line per stage: "<stage>: <tier> (score <score>), ran ok=<ok>"
-
-Findings (descriptors only — no document content was extracted for you):
-{findings_json}         # JSON array of AdvisoryFinding
-
-Write the decision-support explanation as instructed.
-```
-
-### Output shape (`AdvisoryOutput`)
-
-```python
-@dataclass(frozen=True)
-class FindingRationale:
-    finding_id: str
-    rationale: str
-
-@dataclass(frozen=True)
-class AdvisoryOutput:
-    summary: str
-    tier_statement: str
-    finding_rationales: tuple[FindingRationale, ...]
-    model: str = ""             # engine name + version, for the audit trail
-```
-
-The advisory layer validates that every `finding_rationale.finding_id` exists in
-the `AdvisoryInput` (the model may not cite an id it was not given) and that the
-output is parseable JSON; a malformed response degrades to a templated fallback
-summary rather than failing the job.
-
----
-
-## 4. UI information architecture (item 4)
-
-A claims reviewer's workflow. Every screen frames the result as **decision
-support**, never a machine verdict.
-
-### Reviewer states
-
-| State | What the reviewer sees |
-|---|---|
-| **Upload** | Drop zone for one PDF. Copy: "Upload a claim document for an automated forgery review. Results are advisory; you make the final decision." Shows accepted type/size limits. |
-| **Processing** | Per-stage progress list — one row per stage (`revision_recovery`, `font_forensics`, `invoice_arithmetic`, `provenance_metadata`, `ocr_crosscheck`) with a state pill (queued / running / done / skipped / error). A stage erroring shows "could not run" and the others continue. |
-| **Result** | **Verdict hero**: overall tier as an advisory band (e.g. "Review recommended — MEDIUM") + score, with the standing caveat "Advisory — a reviewer makes the final call." Then the **advisory explanation** (summary + tier_statement). Then an **expandable per-stage drill-down**: each stage's tier + its findings (descriptor chips: type, token_class, page) with the advisory rationale cited by `finding_id`. (Raw before→after is shown only via the separate gated evidence action, §2.) |
-| **Empty** | No findings on a clean/INCONCLUSIVE document: "No tampering signals from these methods" (LOW) or "These methods could not assess this document" (INCONCLUSIVE) — explicitly NOT "this document is genuine." |
-| **Error** | Job failed to run at all (unreadable / unsupported file): plain error + retry, never a verdict. Distinct from a stage that ran and found nothing. |
-
-### API contract the UI consumes
-
-Non-blocking, mirroring project invariant #8 (the API never blocks on inference).
-
-| Method & path | Purpose | Returns |
+| # | Stage | Role |
 |---|---|---|
-| `POST /v1/documents` | Submit one PDF for review. | `202 {job_id, status_url}` |
-| `GET /v1/jobs/{job_id}` | Poll job + per-stage progress; includes the **scrubbed** `AdvisoryInput`-shaped result when done. | `{state, stages:[{stage,state}], result?: <AggregateResult projected to descriptors>}` |
-| `GET /v1/jobs/{job_id}/advisory` | Stream the advisory explanation (SSE) as it generates. | `text/event-stream` of advisory chunks; final event is the full `AdvisoryOutput`. |
-| `GET /v1/jobs/{job_id}/findings/{finding_id}/evidence` | (Out of scope this slice) gated, audit-logged raw before→after for one finding. | `{before, after}` — authenticated only. |
+| 1 | `revision_recovery` | substantive |
+| 2 | `font_forensics` | substantive |
+| 3 | `ocr_crosscheck` | substantive (routes scanned pages → `image_forensics`) |
+| 4 | `invoice_arithmetic` | substantive |
+| 5 | `provenance_metadata` | corroborator |
+| **6** | **`image_forensics`** (this doc) | **substantive (image-dominant pages only)** |
+| 7 | `aggregate` (assembly / advisory / UI) | post-pipeline, **not** a `core.Stage` |
 
-**Critical:** the result and advisory endpoints serve **descriptors + advisory
-prose only** (the `AdvisoryInput`/`AdvisoryOutput` shapes). Raw extracted text
-never transits these endpoints — only the gated evidence endpoint, which is not
-part of the thin slice.
+**Stage 7** (`pdf_forgery/aggregate/`) — the post-pipeline assembly / PHI-scrub /
+advisory / UI layer — was historically labelled "Stage 6"; it was renumbered to
+**Stage 7** (2026-06-19) so that "Stage 6" denotes this raster/pixel-forensics
+detector. Its design contract moved to `docs/STAGE7_DESIGN.md` and all its
+code/docstring references were repointed accordingly.
 
 ---
 
-## 5. Interfaces + stubs (item 5)
+## Locked decisions (summary)
 
-All modules live under `src/pdf_forgery/aggregate/`. **Data models / enums /
-config and the prompt text are real** (they are contracts/content). **Every
-logic function is a stub** with a full signature + docstring that raises
-`NotImplementedError`. The `safe_log` formatting helper is real (a small safety
-primitive, no detection logic). Nothing computes an aggregate or calls a model
-this session.
+1. **Stage name = `image_forensics`** (matches Stage 3's `routed_to`).
+2. **Activation is per-page and conservative** — SUBSTANTIVE only on
+   image-dominant pages (text floor mirroring Stage 3, OR a single raster image
+   dominating the page area). Digital-native pages → INCONCLUSIVE. **Never run
+   pixel forensics on `ctx.rasterized_pages()` (the re-rendered page).**
+3. **Forensics run on the ORIGINAL embedded raster bytes** — the DCTDecode /
+   JPXDecode / FlateDecode image XObject streams — never on a re-rasterised page.
+   Re-rasterisation re-compresses and destroys the JPEG-grid / quantisation
+   evidence the JPEG methods depend on. `ctx.rasterized_pages()` is used for **UI
+   overlay only**.
+4. **Engine abstraction mirrors the `OCREngine` pattern** — a `ForensicMethod`
+   interface and a `ForensicProvider` bundle. Default = a **classical
+   skimage/OpenCV provider (CPU)**. PhotoHolmes is an **optional** provider behind
+   the same interface.
+5. **PhotoHolmes: depend optionally, not by default.** Base license is Apache-2.0
+   (acceptable — *not* AGPL), but it drags in **PyTorch** (heavy / GPU / VRAM
+   contention with PaddleOCR + Ollama) and its strongest DL method (**TruFor**) is
+   **non-profit-only** → unusable in a corporate insurance tool. Use the classical
+   skimage/OpenCV provider as the default; offer PhotoHolmes as an opt-in provider
+   (its classical methods are Apache-2.0 and useful for cross-validation; its DL
+   methods stay behind an opt-in flag + VRAM guard, **TruFor excluded** for
+   corporate use).
+6. **Classical-first method set:** ELA, double-quantisation / double-JPEG (DQ +
+   JPEG-grid), and noise/residual inconsistency, all CPU. **Copy-move IS in
+   scope** (OpenCV ORB + RANSAC — PhotoHolmes does not provide it) but conservative
+   (never HIGH alone). DL methods are opt-in, VRAM-guarded, off by default.
+7. **Localization:** every method produces a heatmap in the **embedded image's
+   pixel grid**; it is thresholded → connected-component blobs → mapped through the
+   image's placement matrix into **page points (pdfplumber top-left convention)**,
+   then normalised to the canonical `[0,1]` `BBox` the overlay UI already consumes.
+8. **Scoring is conservative — a single weak blob is never HIGH.** HIGH requires
+   **two independent, co-located signals** (e.g. a localised double-JPEG ghost AND
+   a co-located noise/residual discontinuity). A method that errors on an
+   image-dominant page becomes MEDIUM (never silently dropped).
+9. **PHI-safe:** logs carry counts / positions / hashes / method names+versions /
+   device only — never raw pixels, never the decoded image, never the heatmap
+   array. The heatmap/overlay PNG is PHI → gated evidence endpoint only. The
+   existing `phi_scrub` allow-list needs **no new raw fields**.
 
-### Module map
+---
 
-| Module | Responsibility |
-|---|---|
-| `models.py` | `BBox`, `AggregateFinding`, `AggregateResult`, `AdvisoryStage`, `AdvisoryFinding`, `AdvisoryInput`, `FindingRationale`, `AdvisoryOutput`, `ADVISORY_FINDING_ALLOWLIST` — all real (contracts). |
-| `config.py` | `AggregateConfig` — wraps `FusionConfig`, advisory toggle/engine name, allow-list, score bands. Nothing magic hard-coded outside it. |
-| `aggregate.py` | `aggregate(results, config) -> AggregateResult` + `_flatten_findings` + per-stage `_finding_bbox` / `_finding_type`. **Stubs.** |
-| `phi_scrub.py` | `to_advisory_input(aggregate, config) -> AdvisoryInput` + `assert_advisory_safe(...)`. The trust boundary. **Stubs.** |
-| `prompts.py` | `SYSTEM_PROMPT`, `USER_PROMPT_TEMPLATE` (**real**) + `build_advisory_messages(advisory_input, config) -> list[Message]` (**stub**). |
-| `advisory.py` | `Message`, `AdvisoryEngine` Protocol, `StubAdvisoryEngine` (deterministic, no GPU — the 6.1 default), `LocalLLMAdvisoryEngine` (GPU, swappable), `generate_advisory(advisory_input, engine, config)`. **Stubs.** |
-| `api.py` | HTTP contract dataclasses (`JobSubmission`, `JobStatus`, `StageProgress`, `JobResult`, `AdvisoryEvent`) + stub handlers. No web framework imported (kept dependency-free this slice). **Stubs.** |
-| `safe_log.py` | `finding_log_record(finding)` (allow-listed dict) + `salted_hash(value, salt)` — **real**, PHI-safe. |
-| `__init__.py` | Facade re-exports. |
+## 1. Activation predicate
 
-### `AdvisoryEngine` — pluggable, like `OCREngine`
+Stage 6 decides **per page** whether pixel forensics apply. It mirrors Stage 3's
+text floor so the two stages partition the document the same way (Stage 3 owns
+text-rich pages; Stage 6 owns image-dominant pages).
+
+A page is **image-dominant** (→ SUBSTANTIVE for that page) when **either**:
+
+- **Text floor:** the page's embedded word count `< cfg.min_embedded_words`
+  (default `10`, reusing the Stage 3 constant value), **or**
+- **Image dominance:** a single decoded raster image XObject covers
+  `>= cfg.image_area_dominance_frac` (default `0.60`) of the page's area, after
+  mapping the XObject to its placement rectangle (§2).
+
+Otherwise the page is **digital-native** → Stage 6 contributes **nothing** for it
+(no pixel forensics on the 300-DPI re-render).
+
+Whole-document roll-up:
+
+- **No image-dominant page** → `StageResult` tier **INCONCLUSIVE**, `score=None`,
+  note `"no image-dominant page; pixel forensics not applicable"`. This is the
+  "method does not apply" signal — fusion reads INCONCLUSIVE as *no signal*
+  (never a drag-down), exactly like `revision_recovery`'s single-revision case.
+- **≥ 1 image-dominant page** → analyse those pages; the stage tier is the
+  worst-case across analysed pages (§7). Non-image pages still contribute nothing.
+
+```
+activate(page) :=
+    embedded_word_count(page) < cfg.min_embedded_words
+    OR max_image_coverage_frac(page) >= cfg.image_area_dominance_frac
+```
+
+`embedded_word_count` comes from `ctx.page_layouts` (already cached); the stage
+must **not** re-parse the file. Activation is independent of whether Stage 3
+actually ran — the predicate is self-contained — but uses the same threshold so
+the hand-off is coherent.
+
+---
+
+## 2. Pixel source — original embedded raster bytes (critical)
+
+**The forensic methods receive the original compressed/decoded image XObject
+stream, never `ctx.rasterized_pages()`.** Re-rasterisation (pypdfium2 →
+re-encode) is a second compression that erases the very quantisation / JPEG-grid
+evidence double-JPEG and ELA rely on. `ctx.rasterized_pages()` is reserved for
+drawing the UI overlay (§6 / gated endpoint).
+
+### Locating image XObjects
+
+Via `ctx.pikepdf_doc` (shared, already cached):
+
+1. For each page, walk `page.Resources.XObject` for entries with
+   `/Subtype == /Image`. Recurse into form XObjects (`/Subtype /Form`) one level
+   to catch images nested in a form's own `/Resources`.
+2. Record `(page_index, xobject_id "<obj> <gen>", filter chain, width, height,
+   colorspace, bits, /SMask present)`.
+
+### Decoding across colour spaces
+
+Use `pikepdf.PdfImage` as the single decode path:
+
+| Source `/Filter` | How the **original bytes** are obtained | JPEG history? |
+|---|---|---|
+| `DCTDecode` (JPEG) | `obj.read_raw_bytes()` returns the **JPEG file bytes verbatim** — fed straight to the JPEG/DQ/ELA analysers with **zero re-encode** | **yes** (DQ/ZERO/ELA all valid) |
+| `JPXDecode` (JPEG 2000) | `PdfImage(obj)` → decoded pixel array | no (DQ/ZERO N/A; ELA-by-recompress + noise only) |
+| `FlateDecode` / raw | `PdfImage(obj).as_pil_image()` → pixel array | no (lossless; DQ/ZERO N/A) |
+
+Colour handling is delegated to `PdfImage`, which resolves `DeviceGray`,
+`DeviceRGB`, `DeviceCMYK`, `ICCBased`, and `Indexed`, applies the `/Decode`
+array, and composites `/SMask`. The decoder normalises everything to an 8-bit
+**RGB or grayscale** ndarray for the methods; CMYK is converted to RGB. A
+`DecodedImage` carries: `pixels` (ndarray), `jpeg_bytes` (the original JPEG when
+DCTDecode, else `None`), `colorspace`, `page_index`, `xobject_id`, `placement`
+(§ below), and a salted content hash.
+
+**Never raises:** an undecodable / unsupported image is skipped with a note
+(degrades the page, never the run).
+
+### Mapping an XObject back to a page rectangle (for bbox overlay)
+
+An image is always painted into the unit square `[0,1]²` transformed by the
+current transformation matrix (CTM) in effect at its `Do` operator. To recover
+the placement rectangle:
+
+1. Tokenise the page content stream (pikepdf `Page.parse_contents` / a small
+   operator walker), tracking the graphics-state CTM stack (`cm`, `q`, `Q`).
+2. At each `/<Name> Do` whose `<Name>` resolves to our image XObject, snapshot the
+   CTM `M`. The four unit-square corners `(0,0),(1,0),(1,1),(0,1)` map through `M`
+   to page **user-space points** (bottom-left origin); their axis-aligned bbox is
+   the placement rectangle.
+3. Convert to **pdfplumber top-left** convention (`top = page_height_pt - y_top`)
+   to match the coordinate space `revision_recovery`'s overlay and
+   `aggregate._finding_bbox` already use.
+
+The same `M` is the image-pixel → page-point transform used for localization
+(§6). If an image is painted more than once (tiling), each placement is analysed
+independently. If the content stream can't be parsed, the image is still analysed
+but produces no bbox (note recorded) — never a wrong box.
+
+---
+
+## 3. Engine / method abstraction
+
+Mirrors the `ocr_crosscheck.OCREngine` pattern: downstream code depends only on
+the interface, the provider is swappable, optional deps import lazily and degrade
+via `is_available()`.
 
 ```python
 @runtime_checkable
-class AdvisoryEngine(Protocol):
+class ForensicMethod(Protocol):
+    name: str          # canonical, space-free token, e.g. "double_jpeg"
+    version: str
+
+    def applicable(self, image: DecodedImage, cfg) -> bool:
+        """e.g. DQ/ZERO only when image.jpeg_bytes is not None."""
+    def analyze(self, image: DecodedImage, cfg) -> ForensicMap:
+        """Heatmap (+ optional scalar) in the image's pixel grid. Never raises."""
+
+@runtime_checkable
+class ForensicProvider(Protocol):
     name: str
-    def generate(self, messages: list[Message]) -> AdvisoryOutput: ...
-    def is_available(self) -> bool: ...
+    device: str                       # "cpu" | "cuda:0"
+    def is_available(self) -> bool
+    def methods(self, cfg) -> list[ForensicMethod]
+    def provenance(self) -> ForensicProvenance   # §9
 ```
 
-- `StubAdvisoryEngine` — deterministic, templated from the descriptors, **no
-  GPU, no network**. This is the default so the pipe runs end-to-end on any
-  machine (the 6.1 implementation target).
-- `LocalLLMAdvisoryEngine` — wraps a local GPU model. **GPU contention with
-  PaddleOCR only under concurrent load**; in the normal sequential pipeline OCR
-  has released the GPU before advisory runs. When the model/GPU is absent,
-  `is_available()` is `False` and `generate_advisory` degrades to the stub /
-  templated fallback (never raises) — matching the project-wide "report and
-  continue" and Stage 3's `OCREngine` graceful-absence pattern.
-- **Never attempt to download model weights in the sandbox** (project
-  invariant). The real-weights path is documented, not executed.
+`ForensicMap` = `{ method, version, heatmap (ndarray float in [0,1]), scalar
+(float|None), params (dict) }`. Logging only ever touches its scalar / shape /
+hash, never the array (§8).
 
-### PHI-safe logging
+Providers shipped:
 
-All structured logging in the layer goes through `safe_log.finding_log_record`,
-which emits ONLY the allow-listed descriptor fields (`finding_id`, `stage`,
-`type`, `tier`, `score`, `token_class`, `page`, `bbox`) — never `before` /
-`after` / `reason` / payload. A `salted_hash` helper is provided for the rare
-case a token reference must be correlated across logs without exposing it.
+- **`ClassicalProvider` (default, CPU)** — skimage / OpenCV / numpy
+  implementations of ELA, DQ/double-JPEG, JPEG-grid, noise-residual, copy-move.
+  No torch. Always available (hard deps already in the stack: `Pillow`, `numpy`,
+  `opencv-python`).
+- **`PhotoHolmesProvider` (optional, opt-in)** — wraps PhotoHolmes. Lazy import;
+  `is_available()` False when the package/torch is absent. Exposes its classical
+  methods (DQ, ZERO, Splicebuster, Noisesniffer — Apache-2.0) freely; its DL
+  methods (CAT-Net, PSCC-Net, FOCAL) only when `cfg.enable_dl_methods` **and** the
+  VRAM guard passes. **TruFor is never enabled** (non-profit license).
+- **`StubForensicProvider` (tests)** — deterministic, seeded by image content
+  hash, returns canned heatmaps. CPU, always available — lets the whole stage be
+  tested with no skimage/OpenCV/torch.
+
+### VRAM guard (DL methods only)
+
+Before instantiating any DL method: query free VRAM (`torch.cuda.mem_get_info`,
+fallback `pynvml`); require `>= cfg.dl_min_free_vram_mb` (default `2048`). We
+already run PaddleOCR (Stage 3/4) and Ollama (advisory) on the same RTX 4060 (8
+GB) — if either holds memory the guard fails and the stage **degrades to classical
+only** with a note. DL is off by default (`enable_dl_methods=False`).
 
 ---
 
-## 6. Acceptance for this design session
+## 4. PhotoHolmes evaluation (verified 2026-06-19)
 
-- [x] Item 1 — `AggregateResult` schema specified: headline tier/score, per-stage
-      results, flat findings with `finding_id` + descriptor set + **`bbox`
-      carried now** (canonical normalized space); minimal fusion delegated to
-      `fusion.fuse()`, full fusion deferred and config-exposed.
-- [x] Item 2 — PHI-scrub boundary as an explicit **allow-list** (`AdvisoryInput`);
-      forbidden set enumerated; raw before→after relocated to a gated evidence
-      endpoint out of scope this slice.
-- [x] Item 3 — advisory system + user prompt (grounded, cite ids, never re-judge,
-      INCONCLUSIVE honesty) + `AdvisoryOutput` shape.
-- [x] Item 4 — UI states (upload / processing / result / empty / error) + API
-      contract (upload→job, status/result, advisory stream); decision-support copy.
-- [x] Item 5 — stubs + interfaces: data models / config / prompt text real; every
-      logic function a `NotImplementedError` stub; `AdvisoryEngine` pluggable; GPU
-      contention noted; PHI-safe logging via `safe_log`.
-- [x] Stubs compile; **no logic implemented**; the aggregate layer is NOT yet run
-      after the pipeline (wiring is a 6.2 task).
-- [x] `docs/TODO.md` updated with the 6.1 / 6.2 breakdown.
+Verified against the GitHub repo and the published paper (arXiv:2412.14969 /
+*Multimedia Tools and Applications*, 2025) — not from memory.
+
+| Criterion | Finding | Verdict |
+|---|---|---|
+| **License** | Base **Apache-2.0** (not AGPL — unlike the PyMuPDF concern). BUT per-method licenses bind when a method is used; **TruFor restricts use to non-profit**. | Base **OK** for an internal corporate tool; **TruFor excluded**; audit each DL method's license before enabling. |
+| **Dependency weight** | Pulls **PyTorch** (+ `transformers` for some methods, installed manually). Heavy; GPU. | **Fail as a hard/default dependency.** Optional only. |
+| **CPU vs GPU methods** | **Classical/CPU:** Noisesniffer, ZERO, DQ, Splicebuster, Adaptive-CFA. **DL/GPU (PyTorch):** CAT-Net, EXIF-as-Language, PSCC-Net, TruFor, FOCAL. | Classical set is exactly what we want CPU-side; DL set contends for VRAM. |
+| **Copy-move** | **Not provided.** | We implement copy-move ourselves (OpenCV ORB+RANSAC). |
+| **Double-JPEG / double-quant** | Covered by **DQ** (DCT coefficient double-quantisation) and **ZERO** (JPEG grid / compression detection). | Good reference implementations to cross-validate our classical DQ. |
+| **Output** | Heatmaps: Adaptive-CFA, DQ, CAT-Net, Splicebuster, EXIF, TruFor. Scalars: Noisesniffer, ZERO, PSCC-Net, FOCAL. | Compatible with our heatmap→bbox localization (§6). |
+
+**Decision:** PhotoHolmes passes the *license* test (Apache-2.0 base) but fails
+the *weight* test as a default dependency (torch). → **Default to the classical
+skimage/OpenCV provider; ship PhotoHolmes as an opt-in provider** behind the
+`ForensicProvider` interface for cross-validation, with its DL methods gated by
+`enable_dl_methods` + the VRAM guard and TruFor hard-excluded.
+
+The classical fallback (the default) gives us the same forgery coverage without
+PhotoHolmes: ELA (Pillow), double-JPEG/DQ (DCT re-quantisation histogram via
+`scipy`/`numpy`), JPEG-grid (block-boundary energy via OpenCV), noise-residual
+(median/wavelet residual + local variance map), copy-move (OpenCV ORB+RANSAC).
+
+---
+
+## 5. Method set
+
+All methods run on the **original** image bytes (§2). Heatmap unless noted.
+
+| Method | Forgery targeted | Class / device | Output | FP sources on scanned medical bills |
+|---|---|---|---|---|
+| **ELA** (error-level analysis) | direct pixel edit + re-save; splice paste | classical / CPU | heatmap | uniform recompression lifts everything; text/line edges and saturated regions ELA-bright by nature → threshold on *local* contrast, not absolute |
+| **DQ / double-JPEG** (DCT double-quantisation) | localized edit then re-JPEG; splicing a singly-compressed region into a doubly-compressed page | classical / CPU (JPEG source only) | heatmap (per 8×8 block) | multi-generation scans / rescans are globally double-quantised → only a *localised* break is suspicious |
+| **JPEG-grid alignment** (ZERO-style) | splice/overlay paste whose 8×8 grid is misaligned with the host | classical / CPU (JPEG source only) | heatmap / scalar | cropping & resizing shift the grid globally; scanner grid |
+| **Noise / residual inconsistency** (Splicebuster/Noisesniffer-style) | splicing, inpainting, overlay paste | classical / CPU | heatmap | scanner denoising and JPEG blocking create texture; flat paper regions have ~no noise → low confidence there |
+| **Copy-move** (ORB keypoints + RANSAC affine) | duplicated **stamp / signature / approval mark**; cloned background hiding a deletion | classical / CPU | matched-cluster boxes | repeated *legitimate* elements (logos, table rules, identical glyphs/letterhead) → require RANSAC-verified non-trivial offset + min match count; never HIGH alone |
+| **CFA / demosaicing** | (camera-sensor tamper) | classical / CPU | heatmap | **Deferred / near-zero confidence here** — scanned & screenshot docs have no Bayer CFA, mirroring the PRNU/CFA no-sensor guard. Only meaningful for true camera-photo bills; gate behind a sensor-present check. |
+| **DL methods** (CAT-Net / PSCC-Net / FOCAL via PhotoHolmes) | general splicing / inpainting; AI generative fill | DL / GPU (PyTorch) | heatmap / mask | trained on natural camera photos → **domain gap** on scanned documents inflates FPs; opt-in + VRAM-guarded; treated as one corroborating signal, never sole HIGH |
+
+**Copy-move scope decision:** **in scope**, implemented with OpenCV ORB+RANSAC in
+our classical provider (PhotoHolmes does not provide it). It targets a real
+medical-bill forgery (duplicating a "PAID"/approval stamp, or cloning paper to
+cover a deleted line). It is conservative: a verified duplication is **MEDIUM**
+alone and only reaches HIGH when corroborated by a residual/JPEG break at the
+paste boundary (§7).
+
+---
+
+## 6. Localization — heatmap → `BBox`
+
+Each `ForensicMap.heatmap` is in the **decoded image's pixel grid**. To produce
+finding bounding boxes in the coordinate convention the overlay UI consumes:
+
+1. **Threshold** the heatmap at a method-specific `cfg` level → binary mask.
+2. **Connected components** (`cv2.connectedComponentsWithStats`) → blob bboxes in
+   **image-pixel space**; drop blobs `< cfg.min_blob_area_frac` of image area
+   (kills speckle) and merge near-touching blobs.
+3. **Map image-pixel bbox → page points** using the image placement matrix `M`
+   from §2: pixel `(c, r)` → unit-square `(u, v) = (c/W, 1 - r/H)` (image rows run
+   top-down; PDF y runs up) → page user-space point `M · (u, v)`. Take the
+   axis-aligned bbox of the mapped corners, then flip to **pdfplumber top-left**
+   (`top = page_height_pt - y_top`). Result: boxes in **points** + the page's
+   `page_width_pt` / `page_height_pt` — the exact shape `revision_recovery`'s
+   `FindingLocation` carries.
+4. The Stage 6 payload carries these boxes **plus per-page point dimensions** so
+   `aggregate._finding_bbox` can normalise to the canonical `[0,1]` top-left
+   `BBox` — closing, for this stage, the same gap that was closed for
+   `revision_recovery` (a `stage == "image_forensics"` branch in `_finding_bbox`,
+   same positional-integrity guard).
+
+The raw heatmap overlay PNG (real pixels) is **PHI** — produced only on demand by
+the gated evidence endpoint (reuse `aggregate/overlay.py`'s render+lock pattern),
+never carried in the scrubbed advisory channel.
+
+---
+
+## 7. Scoring rule tree
+
+Conservative by design — scanned documents are inherently noisy. Reuses the
+shared `core.ConfidenceTier` semantics and bands (INCONCLUSIVE / LOW 0–30 /
+MEDIUM 30–70 / HIGH 70–100). Evaluated per image-dominant page; the stage tier is
+the **worst-case** across analysed pages (matching the per-page→document
+worst-case rollup used elsewhere).
+
+A method "fires" when it localizes a blob (§6) above its threshold. Two fires are
+**co-located** when their page-point bboxes overlap by `>= cfg.colocate_iou`
+(default `0.30`).
+
+```
+INCONCLUSIVE  — no image-dominant page (method not applicable). score = None.
+
+LOW (0–30)    — image-dominant page(s) analysed, and either:
+                • no method fires above its noise floor, OR
+                • only a GLOBAL/diffuse signal (whole-image ELA lift or uniform
+                  double-quantisation) with no localised break — consistent with
+                  an innocent rescan / recompression, NOT a local edit, OR
+                • a single weak isolated blob from ONE method.
+
+MEDIUM (30–70)— exactly one of:
+                • one method localizes a suspicious region but it is
+                  UNCORROBORATED (e.g. a DQ ghost with no co-located noise break),
+                • a RANSAC-verified copy-move cluster with no corroborating
+                  boundary residual (could be a repeated legitimate element),
+                • a method ERRORED on an image-dominant page (never silently
+                  dropped — mirrors revision_recovery recon-failure → MEDIUM and
+                  Stage 3 lone-orphan → MEDIUM).
+
+HIGH (70–100) — TWO INDEPENDENT, CO-LOCATED signals on the same region:
+                • localised double-JPEG/DQ ghost AND a co-located noise/residual
+                  discontinuity  → 70–85, OR
+                • copy-move duplication corroborated by a residual/JPEG break at
+                  the paste boundary → 70–85, OR
+                • any of the above co-located with an opt-in DL detection → up to
+                  90. A single method NEVER reaches HIGH on its own.
+```
+
+**Fusion role:** SUBSTANTIVE on image-dominant pages (can originate a verdict; not
+added to `FusionConfig.corroborator_stages`). Because scanned evidence is noisy,
+the lone-signal MEDIUM cap intentionally leaves room for *cross-stage*
+corroboration to lift it in `fusion.fuse()` — e.g. a Stage 6 MEDIUM on a page
+whose amount Stage 3's OCR also flags, or a `provenance_metadata` re-render
+footprint, escalates MEDIUM→HIGH there (the same mechanism that lifts
+`invoice_arithmetic`'s lone gross-break). INCONCLUSIVE (digital-native) is read by
+fusion as no signal, never a drag-down.
+
+All thresholds (`min_embedded_words`, `image_area_dominance_frac`, per-method
+heatmap thresholds, `min_blob_area_frac`, `colocate_iou`, score-band values,
+`enable_dl_methods`, `dl_min_free_vram_mb`) live in `ImageForensicsConfig` —
+nothing magic hard-coded outside it.
+
+---
+
+## 8. PHI-safe logging
+
+The decoded image and every heatmap are **document pixels = PHI**. Logging emits
+only: per-image counts, blob **positions** (point/normalized bboxes), **salted
+hashes** of the source stream bytes, method **names + versions**, **device**,
+scalar scores, and blob areas. Never the pixel array, never the heatmap array,
+never a crop. Reuse `aggregate.safe_log` / `salted_hash`.
+
+**`phi_scrub` allow-list — confirmed no new raw fields needed.** Stage 6 findings
+carry **no before/after text** (there is no text — only pixels). The descriptor
+set already supported is sufficient:
+
+- `finding.type` ← the **method / forgery-class label**, a canonical **space-free
+  token < 64 chars** (e.g. `double_jpeg`, `splice`, `copy_move`,
+  `noise_inconsistency`) so it passes `_assert_looks_like_token`. **Do not** use
+  spaced labels like `"double JPEG"`.
+- `finding.token_class` ← `None` (or a coordinate-class), never raw text.
+- `finding.bbox` ← coordinates (already allow-listed).
+- `before` / `after` ← always `None` for this stage.
+
+The heatmap/overlay PNG is served **only** by the gated, audit-logged evidence
+endpoint (the one authenticated path real pixels may cross), exactly like the
+`revision_recovery` overlay.
+
+---
+
+## 9. Reproducibility manifest
+
+Mirrors Stage 3's `RenderProvenance` convention. Every report records, in
+`ForensicProvenance` (carried on the `StageResult.payload`):
+
+- **Per run:** provider name, device, library versions (skimage/opencv/numpy, and
+  PhotoHolmes/torch when used), config snapshot (all thresholds), `enable_dl_methods`.
+- **Per method:** `name`, `version`, `params` (the exact thresholds applied).
+- **Per analysed image:** `page_index`, `xobject_id`, decode path
+  (`DCTDecode`/`JPXDecode`/`FlateDecode`), colour space, `(width, height)`, and a
+  **salted content hash** of the source bytes — so a result is reproducible
+  without retaining the pixels.
+
+---
+
+## Test fixtures needed
+
+Deterministic generators in `scripts/make_image_forensics_fixtures.py`
+(Pillow/numpy/opencv only, **no network**); session-scoped build via
+`tests/conftest.py` like the other fixtures. Unit tests drive the
+`StubForensicProvider`; real-provider acceptance tests skip gracefully when
+skimage/OpenCV (or PhotoHolmes) are absent (mirroring the PaddleOCR pattern).
+
+| Fixture | How built | Expected outcome |
+|---|---|---|
+| **clean scanned bill** (known-negative) | render a clean digital invoice to an image, JPEG-compress at a realistic QF, wrap as a single full-page image PDF | image-dominant, no localised signal → **LOW** (precision baseline) |
+| **spliced amount** (known-positive) | take the clean scan, paste a digit region from a different JPEG-history source over the amount, re-save JPEG | co-located **DQ ghost + noise break** → **HIGH** |
+| **double-compressed (whole-image) forgery** | edit then re-JPEG the *entire* page at a different QF (global, no localised break) | global double-quantisation only → **≤ MEDIUM** (guards against calling an innocent rescan HIGH) |
+| **copy-moved stamp** (known-positive) | duplicate a "PAID"/approval stamp within the page | RANSAC copy-move cluster → **MEDIUM** alone; **HIGH** only with a corroborating boundary residual |
+| **digital-native control** | an ordinary multi-page text PDF (reuse an existing fixture) | activation predicate → **INCONCLUSIVE** (proves pixel forensics never run on the re-render) |
+
+The double-compressed and clean-scan fixtures are the **precision** proof for this
+stage — the analogue of the still-owed real pristine-invoice baseline for
+`invoice_arithmetic`. A real flatbed-scanned untouched bill should eventually be
+dropped at `test_pdf's/` to activate a real-data precision test, as a synthetic
+always-clean fixture is not a substitute.
+
+---
+
+## Integration checklist (for 6.1–6.3)
+
+- Subpackage `src/pdf_forgery/image_forensics/`, `STAGE_NAME = "image_forensics"`.
+- `ImageForensicsStage` conforms to `core.Stage`; read-only; never raises.
+- Wire into the live `STAGES` list (`test.py` / pipeline) as a **substantive**
+  stage; **not** added to `FusionConfig.corroborator_stages`.
+- Adapter maps the rich `ImageForensicsReport` ↔ `core.StageResult` (rich report
+  preserved as `payload`); PHI-safe JSON + advisory human-summary renderers.
+- `aggregate._finding_bbox` gains a `stage == "image_forensics"` branch.
+- Gated heatmap-overlay endpoint reuses `aggregate/overlay.py` (lock + PHI gating).
+
+---
+
+### Sources (PhotoHolmes evaluation)
+- [PhotoHolmes GitHub](https://github.com/photoholmes/photoholmes)
+- [PhotoHolmes paper (arXiv:2412.14969)](https://arxiv.org/html/2412.14969v1)
+- [PhotoHolmes — Multimedia Tools and Applications (Springer, 2025)](https://link.springer.com/article/10.1007/s11042-025-20626-3)
 </content>
 </invoke>
