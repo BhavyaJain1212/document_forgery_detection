@@ -305,21 +305,29 @@ deferred to 6.2/6.3 (the `analyze` bodies raise `NotImplementedError`).
 - [x] Tests: `tests/test_image_forensics_scoring.py` (15),
       `tests/test_image_forensics_stage.py` (9, incl. fusion). Suite **887 / 1 skip**.
 
-> **Pipeline status:** Stage 6 is wired end-to-end and live, but it is
-> **INCONCLUSIVE on every document until the classical DSP lands** (the methods
-> raise `NotImplementedError` → capability gaps → no signal; live-safe, never a
-> false MEDIUM). The structural/image-forensics pipeline is *plumbed* end-to-end;
-> real scanned-forgery detection is gated on the DSP below.
+> **Pipeline status:** Stage 6 is wired end-to-end, live, and **DETECTING**
+> (Session 6.4). The classical CPU DSP is implemented and flags real
+> spliced/copy-moved/locally-recompressed scanned bills as HIGH while clean scans
+> and innocent whole-page recompression stay LOW.
 
-### image_forensics / DEFERRED — classical DSP + acceptance fixtures (the detection itself)
-- [ ] Implement the real method math in `ClassicalProvider.analyze` (replace the
-      `NotImplementedError` stubs): ELA, DQ/double-JPEG, JPEG-grid, noise residual,
-      **copy-move** (ORB + RANSAC) → genuine heatmaps through detect→score.
-- [ ] Acceptance fixtures on real pixels (`scripts/make_image_forensics_fixtures.py`):
-      clean scanned bill → LOW, spliced amount → HIGH, whole-image recompress →
-      ≤ MEDIUM, copy-move → MEDIUM (skip gracefully when skimage/OpenCV absent).
-- [ ] Optional `aggregate._finding_bbox` `image_forensics` branch (payload boxes
+### image_forensics / 6.4 — classical DSP + real-pixel fixtures ✅ (2026-06-22) — FULLY COMPLETE
+- [x] Real method math in `ClassicalProvider` (new `classical.py`): ELA,
+      DQ/double-JPEG (quant-lattice misfit, scipy DCT on the ORIGINAL JPEG + PIL
+      quant tables — no page re-render), JPEG-grid, noise-residual (flat-block
+      gated), **copy-move** (ORB+RANSAC) → genuine heatmaps through detect→score.
+      Methods no longer raise `NotImplementedError`; `detect.executions` makes a
+      clean scan LOW (analysed, no fire) while gaps still → INCONCLUSIVE.
+- [x] Real-pixel acceptance fixtures (`make_image_forensics_fixtures.py`): clean
+      scan → LOW, spliced amount → **HIGH with bbox**, local double-compress →
+      localized, whole-page recompress → **no local region**, copy-move → detected.
+- [x] Tests: `tests/test_image_forensics_classical.py` (7); the former deferred-DSP
+      INCONCLUSIVE stage assertion flipped to live spliced→HIGH + clean→LOW. Suite
+      **895 / 1 skip**; digital-native regression guard holds.
+- [ ] (Optional) `aggregate._finding_bbox` `image_forensics` branch (payload boxes
       already in `FindingLocation` shape) + gated heatmap-overlay endpoint.
+- Owner-calibration items surfaced: recomputed (not entropy-decoded) DCT
+  coefficients; ELA edge sensitivity on text-heavy real scans; robust-z thresholds
+  tuned to synthetic fixtures — all pending the still-owed real scanned-bill drop.
 
 ### image_forensics / OPTIONAL — PhotoHolmes / opt-in DL + reproducibility + UI overlay
 - [ ] `PhotoHolmesProvider` behind the `ForensicProvider` interface (Apache-2.0

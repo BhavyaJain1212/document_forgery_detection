@@ -66,13 +66,59 @@ class ImageForensicsConfig:
     most a weak booster downstream (6.3). Default: the lower half of the page,
     where invoice totals usually sit. Widen/narrow per document population."""
 
-    # ---- Per-method heatmap thresholds (§5; consumed in 6.2/6.3) -------- #
+    # ---- Per-method heatmap thresholds (§5) ----------------------------- #
     ela_threshold: float = 0.50
     dq_threshold: float = 0.50
     jpeg_grid_threshold: float = 0.50
     noise_threshold: float = 0.50
+
+    # ---- Classical DSP knobs (§4 method math) --------------------------- #
+    ela_quality: int = 75
+    """JPEG quality used for the ELA recompression pass. Kept below typical scan
+    quality so the recompression actually exercises the high-frequency content: a
+    region with a different compression / noise history reaches a different error
+    floor than its host (recompressing AT the source quality would be ~identity)."""
+
+    anomaly_block: int = 16
+    """Side (px) of the block grid ELA / noise measures are reduced to before the
+    robust-z anomaly map (suppresses pixel speckle; resolution-independent)."""
+
+    anomaly_z0: float = 3.0
+    """Robust-z centre for the unidirectional (ELA / DQ / grid) anomaly sigmoid —
+    a block must sit this many MAD above the image's own median to light up. High
+    enough that a clean / uniformly compressed page stays dark (precision)."""
+
+    anomaly_slope: float = 1.5
+    """Steepness of the anomaly sigmoid around its centre."""
+
+    noise_z0: float = 3.0
+    """Robust-z centre for the bidirectional noise-residual anomaly (a spliced
+    region deviates in EITHER noise direction)."""
+
+    noise_flat_percentile: float = 0.6
+    """Noise inconsistency is only estimated on the flattest this-fraction of
+    blocks — an edge / rule / glyph inflates the residual without being a noise
+    anomaly, so textured blocks are gated out (Noisesniffer principle). Keeps a
+    lined / text-bearing clean scan out of a false MEDIUM."""
+
+    dq_z0: float = 3.0
+    """Robust-z centre for the double-JPEG quantisation-misfit anomaly."""
+
+    jpeg_grid_z0: float = 3.0
+    """Robust-z centre for the JPEG-grid on-grid-energy-deficit anomaly."""
+
     copy_move_min_matches: int = 12
     """Minimum RANSAC-verified ORB matches before a copy-move cluster fires."""
+
+    copy_move_orb_features: int = 2000
+    """ORB keypoint budget for copy-move detection."""
+
+    copy_move_orb_max_dist: float = 48.0
+    """Max Hamming distance for an ORB self-match to count toward copy-move."""
+
+    copy_move_min_offset_frac: float = 0.08
+    """A copy-move match pair must be separated by at least this fraction of the
+    image diagonal — rejects repeated *adjacent* legitimate elements / texture."""
 
     # ---- DL methods (PhotoHolmes, opt-in + VRAM-guarded; §3) ------------ #
     enable_dl_methods: bool = False

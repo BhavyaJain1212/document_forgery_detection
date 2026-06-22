@@ -42,6 +42,24 @@ def test_parse_keeps_nonstyle_suffix_in_family():
     assert parse_font_identity("Helvetica-Neue").family == "Helvetica-Neue"
 
 
+def test_family_root_strips_vendor_suffix_glued():
+    assert parse_font_identity("ArialMT").family == "Arial"
+    assert parse_font_identity("TimesNewRomanPSMT").family == "TimesNewRoman"
+
+
+def test_family_root_strips_compound_style_vendor():
+    assert parse_font_identity("Arial-BoldMT").family == "Arial"
+    assert parse_font_identity("CourierNewPS-BoldMT").family == "CourierNew"
+
+
+def test_family_root_preserves_real_nonstyle_suffix():
+    assert parse_font_identity("Helvetica-Neue").family == "Helvetica-Neue"
+    assert is_substitution(
+        parse_font_identity("CourierNewPS-BoldMT"),
+        parse_font_identity("ArialMT"),
+    ) is True
+
+
 def test_parse_placeholder_names():
     assert parse_font_identity("unknown").is_placeholder is True
     assert parse_font_identity("").is_placeholder is True
@@ -89,6 +107,13 @@ def test_one_side_not_subset_false():
 def test_bold_is_style_variant_not_substitution():
     a = parse_font_identity("Helvetica")
     b = parse_font_identity("Helvetica-Bold")
+    assert is_style_variant(a, b) is True
+    assert is_substitution(a, b) is False
+
+
+def test_arialmt_bold_is_style_variant_not_substitution():
+    a = parse_font_identity("Arial-BoldMT")
+    b = parse_font_identity("ArialMT")
     assert is_style_variant(a, b) is True
     assert is_substitution(a, b) is False
 

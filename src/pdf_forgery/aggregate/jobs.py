@@ -71,6 +71,29 @@ DONE = "done"
 ERROR = "error"
 
 
+def _pdf_page_count(pdf_bytes: bytes) -> int:
+    """Return the number of renderable PDF pages, or ``0`` on failure.
+
+    Page count is non-PHI metadata used only to tell the reviewer UI which gated
+    page-image URLs to request.  Keep this best-effort like page rendering: a
+    malformed PDF or unavailable renderer must not prevent job submission.
+    """
+    try:
+        import pypdfium2 as pdfium
+        from .overlay import _RENDER_LOCK
+
+        # Pdfium has process-global state and is not thread-safe. Share the
+        # renderer lock because submissions can overlap existing page renders.
+        with _RENDER_LOCK:
+            document = pdfium.PdfDocument(pdf_bytes)
+            try:
+                return len(document)
+            finally:
+                document.close()
+    except Exception:
+        return 0
+
+
 @dataclass
 class Job:
     """One uploaded document's analysis lifecycle (mutable, in-memory)."""
@@ -81,6 +104,7 @@ class Job:
     # ordered per-stage progress: stage name -> queued/running/done/error
     stage_states: dict[str, str] = field(default_factory=dict)
     pdf_bytes: bytes | None = None  # server-side only (PHI); for the gated evidence view
+    page_count: int = 0  # non-PHI document metadata; computed once at submission
     aggregate_result: AggregateResult | None = None  # server-side, behind PHI boundary
     advisory_input: AdvisoryInput | None = None  # scrubbed; safe to serve
     advisory_output: AdvisoryOutput | None = None  # cached after first SSE generation
@@ -107,6 +131,7 @@ class JobManager:
             filename=filename,
             stage_states={name: QUEUED for name in STAGE_ORDER},
             pdf_bytes=pdf_bytes,
+            page_count=_pdf_page_count(pdf_bytes),
         )
         with self._lock:
             self._jobs[job.job_id] = job

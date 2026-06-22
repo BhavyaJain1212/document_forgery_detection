@@ -190,10 +190,14 @@ class TestEngine:
         assert not methods["double_jpeg"].applicable(flat_img, CFG)
         assert methods["ela"].applicable(flat_img, CFG)
 
-    def test_classical_analyze_is_deferred(self):
+    def test_classical_analyze_runs_and_returns_map(self):
+        # The classical DSP is implemented (Session 6.4): analyze runs and returns
+        # a ForensicMap (never NotImplementedError). A tiny degenerate image yields
+        # a None heatmap ("ran, too little data") — still a clean ForensicMap.
         ela = ClassicalProvider().methods(CFG)[0]
-        with pytest.raises(NotImplementedError):
-            ela.analyze(_fake_image(), CFG)
+        fmap = ela.analyze(_fake_image(), CFG)
+        assert isinstance(fmap, ForensicMap)
+        assert fmap.method == "ela"
 
     def test_stub_is_deterministic_and_never_raises(self):
         prov = StubForensicProvider()
@@ -214,7 +218,8 @@ class TestEngine:
         assert prov.provider == "classical"
         assert prov.device == "cpu"
         assert prov.enable_dl_methods is False
-        assert ("ela", "0.1.0-stub") in prov.methods
+        method_names = {name for name, _ver in prov.methods}
+        assert {"ela", "double_jpeg", "noise_inconsistency", "copy_move"} <= method_names
         assert "numpy" in prov.library_versions
 
 

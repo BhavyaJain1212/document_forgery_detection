@@ -32,7 +32,7 @@
       <!-- Upload -->
       <section id="view-upload" class="view">
         <div id="dropzone" class="upload" role="button" tabindex="0"
-          aria-label="Upload a PDF claim document">
+          aria-label="Upload a claim document">
           <div class="upload__icon" aria-hidden="true">
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none"
               stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
@@ -48,11 +48,12 @@
             Results are advisory — you make the final decision.
           </p>
           <button id="browse-btn" class="btn btn--primary" type="button">
-            Choose PDF
+            Choose file
           </button>
           <p class="upload__drophint">or drag and drop it here</p>
-          <p class="upload__hint">PDF only · up to 25&nbsp;MB · processed locally</p>
-          <input id="file-input" type="file" accept="application/pdf,.pdf"
+          <p class="upload__hint">PDF, JPEG or PNG · up to 25&nbsp;MB · processed locally</p>
+          <input id="file-input" type="file"
+            accept="application/pdf,.pdf,.jpg,.jpeg,.png,image/jpeg,image/png"
             class="hidden" />
         </div>
       </section>

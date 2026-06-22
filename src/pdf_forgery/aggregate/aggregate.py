@@ -32,6 +32,16 @@ _OBJECT_CLASS_TYPE = (
     ("META", "metadata_change"),
 )
 
+# image_forensics: stable advisory-safe type token for each classical method.
+# Method names come from the detector implementation, never from document data.
+_IMAGE_METHOD_TYPE = {
+    "ela": "image_ela",
+    "double_jpeg": "image_double_jpeg",
+    "jpeg_grid": "image_jpeg_grid",
+    "noise_inconsistency": "image_noise",
+    "copy_move": "image_copy_move",
+}
+
 
 def aggregate(
     results: Sequence[StageResult],
@@ -141,6 +151,22 @@ def _finding_type(stage_result: StageResult, finding: Finding, index: int) -> st
         if rich is not None and index < len(rich):
             return rich[index].kind.value
         return "provenance_anomaly"
+
+    if stage == "image_forensics":
+        rich = _payload_findings(payload)
+        if rich is not None and index < len(rich):
+            region = getattr(rich[index], "region", None)
+            # The stage adapter maps RegionFinding objects 1:1 into core
+            # Findings. Verify the page before trusting that positional link.
+            if region is not None and finding.page == getattr(
+                region, "page_index", None
+            ):
+                if getattr(region, "co_located", False):
+                    return "image_splice"
+                methods = getattr(region, "methods", ())
+                if methods:
+                    return _IMAGE_METHOD_TYPE.get(methods[0], "image_anomaly")
+        return "image_anomaly"
 
     return finding.high_value or "finding"
 

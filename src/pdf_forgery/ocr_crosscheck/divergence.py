@@ -106,6 +106,44 @@ def _high_value_subtokens(
     return out
 
 
+def _same_token_bag(
+    joined_embedded: str,
+    ocr_text: str,
+    config: OCRCrossCheckConfig | None = None,
+) -> bool:
+    """Whether two multi-token strings have the same folded token multiset.
+
+    Splitting before folding is important: this recognizes only a whole-token
+    reading-order change, while any insertion, deletion, or character edit
+    still changes the bag.
+    """
+    from .normalize import fold
+
+    cfg = config or OCRCrossCheckConfig()
+    embedded_tokens = sorted(fold(tok, cfg) for tok in joined_embedded.split())
+    ocr_tokens = sorted(fold(tok, cfg) for tok in ocr_text.split())
+    return len(embedded_tokens) > 1 and embedded_tokens == ocr_tokens
+
+
+def _overlaps_any(
+    bbox: tuple[float, float, float, float],
+    embedded_boxes: list[WordBox],
+    margin_px: float,
+) -> bool:
+    """Return whether ``bbox`` overlaps any margin-expanded embedded box."""
+    x0, y0, x1, y1 = bbox
+    for word in embedded_boxes:
+        ex0, ey0, ex1, ey1 = word.bbox
+        if (
+            x1 >= ex0 - margin_px
+            and x0 <= ex1 + margin_px
+            and y1 >= ey0 - margin_px
+            and y0 <= ey1 + margin_px
+        ):
+            return True
+    return False
+
+
 def classify_group(
     embedded: tuple[WordBox, ...],
     ocr: WordBox,
@@ -150,6 +188,14 @@ def classify_group(
         agree = hv_intact and prose_ok
     else:
         agree = is_within_tolerance(joined_emb, ocr.text, tok_class, cfg)
+
+    if (
+        not agree
+        and cfg.treat_reordered_tokens_as_agree
+        and tok_class not in (TokenClass.AMOUNT, TokenClass.DATE)
+        and _same_token_bag(joined_emb, ocr.text, cfg)
+    ):
+        agree = True
 
     if agree:
         div_type = DivergenceType.AGREE
@@ -208,11 +254,16 @@ def classify_page(
     unmatched_embedded: list[WordBox],
     unmatched_ocr: list[WordBox],
     config: OCRCrossCheckConfig | None = None,
+    *,
+    page_embedded_boxes: list[WordBox] | None = None,
 ) -> list[Divergence]:
     """Classify every comparison on one page into :class:`Divergence` objects.
 
     Returns AGREE / MISMATCH divergences for matched groups, then
-    EMBEDDED_ONLY / OCR_ONLY for residues — in that order.
+    EMBEDDED_ONLY / OCR_ONLY for residues — in that order. When the complete
+    page-level embedded box list is supplied, isolated OCR_ONLY words that do
+    not overlap original text are treated as image-native graphic content. The
+    gate is inert when the list is omitted, preserving direct-call behaviour.
     """
     cfg = config or OCRCrossCheckConfig()
     result: list[Divergence] = []
@@ -223,8 +274,21 @@ def classify_page(
     for w in unmatched_embedded:
         result.append(classify_unmatched(w, cfg))
 
-    for w in unmatched_ocr:
-        result.append(classify_unmatched(w, cfg))
+    ocr_only = [classify_unmatched(w, cfg) for w in unmatched_ocr]
+    if cfg.require_embedded_overlap_for_ocr_only and page_embedded_boxes is not None:
+        graphic_region_orphans = [
+            d
+            for d in ocr_only
+            if d.ocr is not None
+            and not _overlaps_any(
+                d.ocr.bbox, page_embedded_boxes, cfg.ocr_only_overlap_margin_px
+            )
+        ]
+        if len(graphic_region_orphans) < cfg.graphic_region_orphan_route_threshold:
+            graphic_ids = {id(d) for d in graphic_region_orphans}
+            ocr_only = [d for d in ocr_only if id(d) not in graphic_ids]
+
+    result.extend(ocr_only)
 
     return result
 

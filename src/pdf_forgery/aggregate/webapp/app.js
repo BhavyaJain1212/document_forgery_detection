@@ -215,7 +215,7 @@ function poll(jobId) {
     if (status.stages) updateProcessing(status.stages);
 
     if (status.state === "done") {
-      renderResult(status.result);
+      renderResult(status.result, status.page_count);
       connectAdvisory(jobId);
       return;
     }
@@ -230,7 +230,7 @@ function poll(jobId) {
 // =====================================================================
 // Result — verdict hero + advisory + breakdown
 // =====================================================================
-function renderResult(result) {
+function renderResult(result, pageCount) {
   const tier = result.tier || "inconclusive";
   const meta = TIER_META[tier] || TIER_META.inconclusive;
   const scoreShown = result.score === null || result.score === undefined;
@@ -253,7 +253,7 @@ function renderResult(result) {
         <span class="hero__chip">${findingsSummary(result.findings)}</span>
       </div>
       <div class="hero__doc">
-        ${I.doc}<span class="hero__file mono">${esc(currentFilename || "document.pdf")}</span>
+        ${I.doc}<span class="hero__file mono">${esc(currentFilename || "document")}</span>
       </div>
       <div class="hero__main">
         ${scoreBlock}
@@ -277,7 +277,7 @@ function renderResult(result) {
     </div>`;
 
   const analysis = `<div class="result__left">${hero}${advisory}${breakdown}</div>`;
-  const document_ = renderDocPane(result);
+  const document_ = renderDocPane(result, pageCount);
 
   $("view-result").innerHTML =
     `<div class="result">${actions}<div class="result__split">${analysis}${document_}</div></div>`;
@@ -292,7 +292,7 @@ function renderResult(result) {
 // text each finding localised. Coordinates come from the scrubbed,
 // normalized `bbox`; the page pixels come from the gated image endpoint.
 // =====================================================================
-function renderDocPane(result) {
+function renderDocPane(result, pageCount) {
   const boxed = (result.findings || []).filter(
     (f) => f.bbox && f.page !== null && f.page !== undefined
   );
@@ -300,29 +300,33 @@ function renderDocPane(result) {
   boxed.forEach((f) => {
     (byPage[f.page] = byPage[f.page] || []).push(f);
   });
-  const pages = Object.keys(byPage).map(Number).sort((a, b) => a - b);
+  const count = Number.isInteger(pageCount) && pageCount > 0 ? pageCount : 0;
+  const pages = Array.from({ length: count }, (_, page) => page);
 
   let inner;
   if (pages.length === 0) {
     inner = `
       <div class="docpane__empty">
         <div class="docpane__empty-icon">${I.doc}</div>
-        <p class="docpane__empty-title">No on-page locations to show</p>
+        <p class="docpane__empty-title">Document preview unavailable</p>
         <p class="docpane__empty-sub">
-          The findings aren’t tied to a specific spot on the page — this happens
-          when a change isn’t in the recoverable text layer (for example an image
-          overlay, or a non-text edit).
+          The document’s page count could not be read, so there are no page
+          previews to show. The detector results are still available on the left.
         </p>
       </div>`;
   } else {
-    inner = pages.map((p) => docPageFigure(p, byPage[p])).join("");
+    inner = pages.map((p) => docPageFigure(p, byPage[p] || [])).join("");
   }
+
+  const legend = boxed.length
+    ? `<span class="docpane__legend"><span class="docpane__swatch"></span>Edited text</span>`
+    : "";
 
   return `
     <aside class="docpane">
       <div class="docpane__head">
-        <div class="section-label">Flagged on the document</div>
-        <span class="docpane__legend"><span class="docpane__swatch"></span>Edited text</span>
+        <div class="section-label">Document</div>
+        ${legend}
       </div>
       <div class="docpane__scroll">${inner}</div>
     </aside>`;
@@ -377,10 +381,25 @@ function bindDocPane() {
   });
 
   // Degrade gracefully if a page image can't be rendered (e.g. no renderer).
-  document.querySelectorAll(".docpage__img").forEach((img) => {
+  const images = Array.from(document.querySelectorAll(".docpage__img"));
+  let failedImages = 0;
+  images.forEach((img) => {
     img.addEventListener("error", () => {
       const fig = img.closest(".docpage");
       if (fig) fig.innerHTML = `<div class="docpage__err">Page preview unavailable.</div>`;
+      failedImages += 1;
+      if (failedImages === images.length) {
+        const scroll = document.querySelector(".docpane__scroll");
+        if (scroll) scroll.innerHTML = `
+          <div class="docpane__empty">
+            <div class="docpane__empty-icon">${I.doc}</div>
+            <p class="docpane__empty-title">Document preview unavailable</p>
+            <p class="docpane__empty-sub">
+              None of the document pages could be rendered. The detector results
+              are still available on the left.
+            </p>
+          </div>`;
+      }
     });
   });
 }

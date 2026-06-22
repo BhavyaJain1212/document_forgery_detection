@@ -230,8 +230,28 @@ repo-root `CLAUDE.md`. Detailed task history below.
     deterministic `StubOCREngine`, untouched.
   - **Verified:** OCR HIGH 75 → **LOW 15** again (matched/agree 2203/2203,
     0 mismatch, all 13 pages). The real-engine acceptance test
-    `test_microsoft_long_invoice_ocr_crosscheck_not_high` (which had been
-    failing under OOM) now PASSES. Full suite: **821 passed, 1 skipped**.
+  `test_microsoft_long_invoice_ocr_crosscheck_not_high` (which had been
+  failing under OOM) now PASSES. Full suite: **821 passed, 1 skipped**.
+
+- [x] **Clean W-2 false-positive fix: reading-order swaps + form-logo OCR**
+  (2026-06-22)
+  - Implemented `docs/plans/ocr_crosscheck_form_false_positive_plan.md`. The
+    clean `test_files/W2_XL_input_clean_1000.pdf` previously produced two ID
+    MISMATCHes (`Statutory 13` vs `13 Statutory`) and two ID OCR_ONLY findings
+    (`IRSefile`), pushing divergence mass above the relative MEDIUM threshold.
+  - Added config-gated, order-insensitive token-bag agreement for multi-token
+    non-AMOUNT/DATE groups. Identical folded token multisets now absorb pure
+    extraction/OCR reading-order swaps; amount/date ordering and every genuine
+    character edit remain strict.
+  - Added a config-gated OCR_ONLY premise check in real orchestration: an
+    unmatched OCR box is surfaced as a possible over-content raster patch only
+    when it overlaps a page embedded-text box (6px configurable margin). Small
+    non-overlapping logo/seal/watermark clusters are omitted from findings and
+    mass; pages with at least 8 such boxes retain them via the configurable
+    safety valve for image-forensics review.
+  - Real PaddleOCR/GPU acceptance: the W-2 OCR stage is **LOW** and neither
+    `Statutory` nor `IRSefile` surfaces as a non-AGREE finding. Focused OCR
+    suite: **104 passed**. Full suite: **906 passed, 25 skipped**.
 
 ## Next — Stage 6 (raster/pixel forensics)
 Stage 3 hands off scanned/image-only PDFs via `routed_to="image_forensics"`.

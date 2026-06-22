@@ -165,6 +165,29 @@ class TestClassifyGroup:
         d = classify_group(emb, _ocr("Rs 5,000"))
         assert d.embedded == emb
 
+    def test_reordered_identical_tokens_agree_for_id(self):
+        emb = (_emb("Statutory"), _emb("13"))
+        d = classify_group(emb, _ocr("13 Statutory"))
+        assert d.type is DivergenceType.AGREE
+        assert d.token_class is TokenClass.ID
+
+    def test_reordered_tokens_not_relaxed_for_amounts(self):
+        emb = (_emb("100"), _emb("200"))
+        d = classify_group(emb, _ocr("200 100"))
+        assert d.type is DivergenceType.MISMATCH
+        assert d.token_class is TokenClass.AMOUNT
+
+    def test_genuine_prose_edit_still_mismatches(self):
+        emb = (_emb("approved"), _emb("claim"))
+        d = classify_group(emb, _ocr("declined claim"))
+        assert d.type is DivergenceType.MISMATCH
+
+    def test_reordered_token_fallback_can_be_disabled(self):
+        cfg = OCRCrossCheckConfig(treat_reordered_tokens_as_agree=False)
+        emb = (_emb("Statutory"), _emb("13"))
+        d = classify_group(emb, _ocr("13 Statutory"), cfg)
+        assert d.type is DivergenceType.MISMATCH
+
 
 # ---------------------------------------------------------------------------
 # RC#1 (docs/STAGE3_LONG_PDF_FALSE_POSITIVE.md) — bare-digit AMOUNT elevation
@@ -347,3 +370,35 @@ class TestClassifyPage:
         assert result[0].type is DivergenceType.AGREE
         assert result[1].type is DivergenceType.EMBEDDED_ONLY
         assert result[2].type is DivergenceType.OCR_ONLY
+
+    def test_ocr_only_in_graphic_region_dropped(self):
+        embedded_boxes = [_emb("wages", x0=0, y0=0, x1=50, y1=20)]
+        logo = _ocr("IRSefile", x0=200, y0=200, x1=260, y1=220)
+        result = classify_page(
+            [], [], [logo], page_embedded_boxes=embedded_boxes
+        )
+        assert all(d.type is not DivergenceType.OCR_ONLY for d in result)
+
+    def test_ocr_only_over_embedded_text_kept(self):
+        embedded_boxes = [_emb("total", x0=100, y0=100, x1=150, y1=120)]
+        overlay = _ocr("PAID", x0=100, y0=100, x1=150, y1=120)
+        result = classify_page(
+            [], [], [overlay], page_embedded_boxes=embedded_boxes
+        )
+        assert any(d.type is DivergenceType.OCR_ONLY for d in result)
+
+    def test_ocr_only_gate_inert_without_page_embedded_boxes(self):
+        logo = _ocr("IRSefile", x0=200, y0=200, x1=260, y1=220)
+        result = classify_page([], [], [logo])
+        assert any(d.type is DivergenceType.OCR_ONLY for d in result)
+
+    def test_many_graphic_region_orphans_kept_by_safety_valve(self):
+        embedded_boxes = [_emb("text", x0=0, y0=0, x1=20, y1=20)]
+        orphans = [
+            _ocr(f"orphan{i}", x0=200 + i * 10, y0=200, x1=205 + i * 10, y1=210)
+            for i in range(10)
+        ]
+        result = classify_page(
+            [], [], orphans, page_embedded_boxes=embedded_boxes
+        )
+        assert sum(d.type is DivergenceType.OCR_ONLY for d in result) == 10

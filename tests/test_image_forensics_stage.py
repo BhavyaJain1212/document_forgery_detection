@@ -119,16 +119,40 @@ class TestStage:
         assert top > region.page_height_pt * CFG.high_value_band_top_frac
         assert bottom <= region.page_height_pt + 1e-6
 
-    def test_real_classical_provider_is_inconclusive_live_safe(self):
-        # Deferred DSP → capability gaps → INCONCLUSIVE (never a false MEDIUM).
+    def test_real_classical_provider_detects_splice_high_end_to_end(self):
+        # Session 6.4: the DEFAULT (real classical) provider, no injection — the
+        # spliced-amount fixture flows through real pixel DSP to a co-located HIGH
+        # with a bbox over the altered amount band. This is the completion proof
+        # (the former deferred-DSP INCONCLUSIVE assertion, flipped live).
         if not ClassicalProvider().is_available():
             pytest.skip("classical CPU stack unavailable")
-        pdf, _ = fixtures.build_jpeg_image_pdf()
+        pdf, gt = fixtures.build_spliced_amount_pdf()
         ctx = AnalysisContext(pdf)
         res = ImageForensicsStage().run(pdf, ctx)  # default = ClassicalProvider
         assert res.ok is True
-        assert res.tier is ConfidenceTier.INCONCLUSIVE
-        assert any("deferred" in n for n in res.notes)
+        assert res.tier is ConfidenceTier.HIGH
+        assert res.score >= 70
+        finding = res.findings[0]
+        assert finding.high_value == "amount"
+        # The flagged region overlaps the ground-truth patch (real maps are noisy
+        # → overlap, not pixel-exact).
+        region = res.payload.findings[0].region
+        x0, top, x1, bottom = region.page_bbox
+        gx0, gtop, gx1, gbot = (gt[0] * 400, gt[1] * 560, gt[2] * 400, gt[3] * 560)
+        assert min(x1, gx1) > max(x0, gx0)        # x overlap
+        assert min(bottom, gbot) > max(top, gtop)  # y overlap
+
+    def test_real_classical_provider_clean_scan_is_low(self):
+        # Precision: a clean scanned bill analysed by the real DSP → LOW, no
+        # false HIGH/MEDIUM region.
+        if not ClassicalProvider().is_available():
+            pytest.skip("classical CPU stack unavailable")
+        pdf = fixtures.build_clean_scan_pdf()
+        ctx = AnalysisContext(pdf)
+        res = ImageForensicsStage().run(pdf, ctx)
+        assert res.ok is True
+        assert res.tier is ConfidenceTier.LOW
+        assert res.findings == ()
 
     def test_internal_failure_is_ok_false_never_raises(self, monkeypatch):
         monkeypatch.setattr(

@@ -33,6 +33,8 @@ from .models import AdvisoryInput, AdvisoryOutput, AdvisoryStage, BBox
 _WEBAPP_DIR = Path(__file__).parent / "webapp"
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB — generous for a claim PDF
 _PDF_MAGIC = b"%PDF"
+_JPEG_MAGIC = b"\xff\xd8\xff"
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 app = FastAPI(title="Claim Document Review", version="0.1.0")
 
@@ -102,6 +104,76 @@ def _advisory_output_dict(output: AdvisoryOutput) -> dict:
     }
 
 
+def _wrap_image_as_pdf(raw: bytes) -> bytes:
+    """Embed a standalone JPEG or PNG into a single-page PDF.
+
+    JPEG bytes are stored verbatim with DCTDecode — no re-encode — so
+    ELA / double-JPEG see the original quantisation history.  PNG is decoded
+    to raw RGB/gray pixels (JPEG-specific methods are not applicable anyway).
+    Raises on failure (caller handles it).
+    """
+    from io import BytesIO as _BytesIO
+
+    import pikepdf
+    from PIL import Image
+    from pikepdf import Array, Dictionary, Name, Pdf
+
+    img = Image.open(_BytesIO(raw))
+    w, h = img.size
+    is_jpeg = raw[:3] == _JPEG_MAGIC
+
+    pdf = Pdf.new()
+
+    if is_jpeg:
+        mode = img.mode
+        if mode in ("RGB", "RGBA"):
+            cs = Name.DeviceRGB
+        elif mode == "L":
+            cs = Name.DeviceGray
+        elif mode == "CMYK":
+            cs = Name.DeviceCMYK
+        else:
+            cs = Name.DeviceRGB
+        img_stream = pdf.make_stream(raw)
+        img_stream.Type = Name.XObject
+        img_stream.Subtype = Name.Image
+        img_stream.Width = w
+        img_stream.Height = h
+        img_stream.ColorSpace = cs
+        img_stream.BitsPerComponent = 8
+        img_stream.Filter = Name.DCTDecode
+    else:
+        # PNG: decode to raw pixels; JPEG-specific methods are inapplicable.
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        cs = Name.DeviceRGB if img.mode == "RGB" else Name.DeviceGray
+        img_stream = pdf.make_stream(img.tobytes())
+        img_stream.Type = Name.XObject
+        img_stream.Subtype = Name.Image
+        img_stream.Width = w
+        img_stream.Height = h
+        img_stream.ColorSpace = cs
+        img_stream.BitsPerComponent = 8
+
+    page_w, page_h = float(w), float(h)
+    content = pdf.make_stream(
+        f"q {page_w} 0 0 {page_h} 0 0 cm /Im0 Do Q".encode("latin-1")
+    )
+    page = pdf.make_indirect(
+        Dictionary(
+            Type=Name.Page,
+            MediaBox=Array([0, 0, page_w, page_h]),
+            Contents=content,
+            Resources=Dictionary(XObject=Dictionary(Im0=img_stream)),
+        )
+    )
+    pdf.Root.Pages.Kids.append(page)
+    pdf.Root.Pages.Count = len(pdf.Root.Pages.Kids)
+    buf = _BytesIO()
+    pdf.save(buf)
+    return buf.getvalue()
+
+
 def _sse(event: AdvisoryEvent) -> str:
     if event.event == "done" and event.output is not None:
         data = json.dumps(_advisory_output_dict(event.output))
@@ -131,13 +203,23 @@ async def post_document(file: UploadFile) -> JSONResponse:
             status_code=413,
             detail=f"File exceeds the {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.",
         )
-    # Route by true format (magic bytes), never the extension (project invariant #4).
-    if not raw.startswith(_PDF_MAGIC):
+    # Route by true format (magic bytes), never the extension (invariant #4).
+    if raw.startswith(_PDF_MAGIC):
+        pdf_bytes = raw
+    elif raw.startswith(_JPEG_MAGIC) or raw.startswith(_PNG_MAGIC):
+        try:
+            pdf_bytes = _wrap_image_as_pdf(raw)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Could not process image file: {exc}",
+            )
+    else:
         raise HTTPException(
             status_code=415,
-            detail="Unsupported file: only PDF documents can be reviewed.",
+            detail="Unsupported file type. Please upload a PDF, JPEG, or PNG.",
         )
-    submission = api.submit_document(raw, filename=file.filename or "document.pdf")
+    submission = api.submit_document(pdf_bytes, filename=file.filename or "document.pdf")
     return JSONResponse(
         status_code=202,
         content={"job_id": submission.job_id, "status_url": submission.status_url},
@@ -157,6 +239,7 @@ def get_job(job_id: str) -> JSONResponse:
             "stages": [
                 {"stage": s.stage, "state": s.state} for s in status.stages
             ],
+            "page_count": status.page_count,
             "result": _advisory_input_dict(status.result),
             "error": status.error,
         }

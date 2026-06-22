@@ -195,6 +195,48 @@ FINDING_TYPE_GLOSSARY: dict[str, tuple[str, str]] = {
         " a consumer tool after its original creation; a reviewer should determine"
         " whether this is consistent with the document's expected workflow.",
     ),
+    # ---- Image / pixel forensics (Stage 6) -------------------------------
+    "image_splice": (
+        "Two or more independent pixel-forensics tests agree on the same area,"
+        " strongly suggesting that part of the image was pasted in or edited.",
+        "Co-located signals are difficult to produce by accident; treat the area"
+        " as likely manipulated and verify it against an original document.",
+    ),
+    "image_ela": (
+        "Error-level analysis found an area with a different JPEG recompression"
+        " pattern from the rest of the page, as can happen with an edited or pasted patch.",
+        "A different compression history can reveal a local edit, but this single"
+        " signal should be checked visually and against the source document.",
+    ),
+    "image_double_jpeg": (
+        "An area carries a different double-JPEG compression history, suggesting it"
+        " was edited or saved separately before the complete page was saved again.",
+        "Local differences in JPEG generations are consistent with a replaced patch;"
+        " compare the area with the original image or issuing-system record.",
+    ),
+    "image_jpeg_grid": (
+        "The JPEG 8×8 compression-block grid is locally misaligned, which can happen"
+        " when a patch from another image is placed onto the page.",
+        "A local grid break can mark the boundary of pasted content; inspect nearby"
+        " edges and confirm the content against a known-good copy.",
+    ),
+    "image_noise": (
+        "The fine pixel-noise pattern in an area differs from its surroundings,"
+        " suggesting that the content may come from a different source.",
+        "A local noise mismatch supports possible splicing, though scanning and image"
+        " processing can also affect noise; corroborate it with the source document.",
+    ),
+    "image_copy_move": (
+        "An area appears duplicated elsewhere on the page, consistent with copy-move"
+        " editing such as cloning a stamp or using copied pixels to cover text.",
+        "Check both repeated areas for an implausible match and verify stamps, amounts,"
+        " or covered content against the original record.",
+    ),
+    "image_anomaly": (
+        "Pixel-level analysis found a suspicious local inconsistency in the document image.",
+        "The detector details were not specific enough to name one technique; inspect"
+        " the page closely and compare it with a known-good original.",
+    ),
     # ---- Fallback entries (reachable only when payload is absent) ----------
     "broken_relationship": (
         "An accounting relationship (line totals, subtotal, grand total) does not"

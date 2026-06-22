@@ -141,6 +141,12 @@ class OCRCrossCheckConfig:
     docs/STAGE3_LONG_PDF_FALSE_POSITIVE.md). Local to Stage 3 only — does NOT
     change ``revision_recovery.highvalue``."""
 
+    treat_reordered_tokens_as_agree: bool = True
+    """Treat a non-AMOUNT/DATE one-to-many group as AGREE when its embedded
+    and OCR texts contain the same folded token multiset in a different order.
+    Reading order can differ across PDF extraction and OCR without any content
+    change. Single-token and high-value groups remain strictly ordered."""
+
     # ------------------------------------------------------------------ #
     # False-positive guards (§4)                                         #
     # ------------------------------------------------------------------ #
@@ -150,6 +156,21 @@ class OCRCrossCheckConfig:
 
     ocr_conf_floor: float = 0.50
     """Drop OCR words below this confidence before matching (§4b)."""
+
+    require_embedded_overlap_for_ocr_only: bool = True
+    """Surface an OCR_ONLY orphan as a possible raster overlay only when its
+    box overlaps embedded text on the page. OCR text in an otherwise empty
+    region is usually image-native form artwork such as a logo or seal; raster
+    insertion into blank space is handled by the image-forensics stage."""
+
+    ocr_only_overlap_margin_px: float = 6.0
+    """Pixel slack around embedded boxes when checking whether an OCR_ONLY
+    orphan could cover original text, measured at ``render_dpi``."""
+
+    graphic_region_orphan_route_threshold: int = 8
+    """Keep all non-overlapping OCR_ONLY orphans when at least this many occur
+    on one page. This safety valve preserves mass image-text anomalies while
+    filtering isolated form logos, seals, and watermarks."""
 
     # ------------------------------------------------------------------ #
     # Routing — scanned / text-sparse short-circuit (§5)                 #

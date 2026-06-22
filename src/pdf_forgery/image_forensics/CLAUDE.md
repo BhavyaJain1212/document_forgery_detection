@@ -146,12 +146,71 @@ Stage 6 (raster / pixel forensics) — the destination of Stage 3's
     INCONCLUSIVE / internal-failure→`ok=False`, + the four fusion confirmations.
     Full suite: **887 passed, 1 skipped**.
 
-## Next — DEFERRED classical DSP (the one piece left)
-Stage 6 is wired end-to-end and live, but **INCONCLUSIVE on every document until
-the real pixel math lands**. Remaining: implement ELA / DQ-double-JPEG /
-JPEG-grid / noise-residual / copy-move in `ClassicalProvider.analyze` (replace the
-`NotImplementedError` stubs) so genuine heatmaps flow through detect→score; add
-the spliced/clean/recompression/copy-move **acceptance fixtures** on real pixels;
-optional `aggregate._finding_bbox` `image_forensics` branch + gated heatmap-overlay
-endpoint for the UI (the boxes are already in `FindingLocation` shape on the
-payload). PhotoHolmes / opt-in DL remains optional-only.
+- [x] **Stage 6 / Session 6.4 — classical pixel DSP + real-pixel fixtures**
+  (2026-06-22) — **Stage 6 FULLY COMPLETE; engine implemented, live, detecting.**
+  - `classical.py` — the real CPU signal processing behind `ClassicalProvider`,
+    each method returning a `[0,1]` heatmap (or `None` = "ran, too little data"):
+    - **`ela`** — recompress at `cfg.ela_quality` (75; below scan quality so the
+      pass actually exercises high-freq, not ≈identity) + per-block robust-z of the
+      local error; thresholds on **local contrast** not absolute (§5 edge FP note).
+    - **`double_jpeg`** (JPEG only) — DCT **quantisation-lattice misfit**: read the
+      quant table verbatim from the original stream (`PIL.Image.quantization`,
+      un-zigzagged) + recompute the block DCT (`scipy.fftpack`) over the ORIGINAL
+      JPEG luminance (NOT the page re-render); a block off the host lattice (splice
+      / local re-compress) is the local outlier. Uniform single/whole-image double
+      compression → flat field → no fire.
+    - **`jpeg_grid`** (JPEG only) — on-grid 8×8 boundary-energy **deficit** per
+      block (distinct signal from DQ → the two can co-locate as 2 independent fires).
+    - **`noise_inconsistency`** — high-pass residual std per block, **flat-block
+      gated** (Noisesniffer principle: edges/rules/glyphs are not noise) so a
+      lined / text-bearing clean scan stays out of MEDIUM; bidirectional robust-z.
+    - **`copy_move`** — ORB (seeded RNG) self-match + RANSAC affine; a cluster needs
+      `≥ copy_move_min_matches` inliers AND a non-trivial offset; marks both source
+      + duplicate. MEDIUM alone; HIGH only with a co-located boundary break.
+    - Normalization is **relative** (robust z vs the image's own median) → a clean /
+      uniformly recompressed page has no positive outlier (precision), only a genuine
+      local anomaly lights up (recall). No `jpegio`/`torchjpeg` (neither installs in
+      the restricted env); scipy-DCT-on-original + PIL quant tables is the reader.
+  - `engine.py` — the five `_ClassicalMethod` subclasses now bind a `classical.*`
+    function (versions `1.0.0`); `analyze` wraps the heatmap in a `ForensicMap` and
+    **never raises NotImplementedError** (a `None` heatmap is no-fire → LOW, not a
+    gap/error). `applicable` unchanged (DQ/grid still JPEG-only).
+  - `detect.py` — added `DetectionResult.executions` (methods that ran to
+    completion); `analyzed` now true when a method **executed** (even with no fire:
+    "analysed, found nothing" = LOW), not only on fires/errors — so a clean scan is
+    LOW, not INCONCLUSIVE. Capability-gap path retained (still hit by stub/absent
+    providers) → INCONCLUSIVE, so the live-safe contract is intact.
+  - `config.py` — DSP knobs: `ela_quality`, `anomaly_block`, `anomaly_z0`/`_slope`,
+    `noise_z0`, `noise_flat_percentile`, `dq_z0`, `jpeg_grid_z0`,
+    `copy_move_orb_features`/`_orb_max_dist`/`_min_offset_frac`.
+  - Fixtures (`make_image_forensics_fixtures.py`) — smooth "scanned bill" base +
+    `build_clean_scan_pdf` (→ LOW), `build_spliced_amount_pdf` (foreign-noise
+    amount-band patch → co-located **HIGH**, returns GT bbox), `build_double_
+    compressed_pdf` (local Q25 re-compress → DQ/grid localizes), `build_recompressed
+    _pdf` (innocent whole-page Q72 rescan → **no local region**), `build_copy_move
+    _pdf` (duplicated stamp → copy-move). All Pillow/numpy/pikepdf, deterministic.
+  - Tests: new `tests/test_image_forensics_classical.py` (7 real-pixel acceptance,
+    skip if cv2/scipy absent); the former deferred-DSP "INCONCLUSIVE live-safe"
+    stage assertion **flipped** to a live spliced→HIGH + clean→LOW pair; the detect
+    capability-gap test rewritten to assert real executions. Full suite: **895
+    passed, 1 skipped**; the digital-native regression guard holds (image-dominant
+    activation means digital-native docs never invoke the engine).
+
+### Owner-calibration items surfaced (not blockers)
+- **DCT source:** coefficients are *recomputed* (scipy DCT on the original JPEG's
+  decoded luminance) rather than entropy-decoded, because `jpegio`/`torchjpeg` do
+  not build in the restricted-network env. Adequate for localization; an
+  entropy-coded-coefficient reader would sharpen DQ marginally.
+- **ELA edge sensitivity:** ELA responds to edges by design; the precision
+  fixtures are deliberately smooth. A text/rule-heavy *real* scan could yield a
+  lone-ELA full-width-rule MEDIUM — the still-owed real flatbed-scanned untouched
+  bill (drop at `test_pdf's/`) is the precision proof, not a synthetic fixture.
+- **Thresholds** (`ela_quality`, the `*_z0` robust-z centres, `noise_flat_
+  percentile`, copy-move gates) are tuned to the synthetic fixtures; expect a
+  re-tune against a real scanned-bill population. The §7 scoring rule tree is
+  untouched (locked).
+
+### Still optional (not required for completeness)
+PhotoHolmes / opt-in DL provider; `aggregate._finding_bbox` `image_forensics`
+branch + gated heatmap-overlay endpoint for the UI (boxes already ride the payload
+in `FindingLocation` shape); config-snapshot in the provenance manifest.

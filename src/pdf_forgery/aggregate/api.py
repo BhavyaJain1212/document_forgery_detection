@@ -49,6 +49,9 @@ class JobStatus:
     """``queued`` / ``processing`` / ``done`` / ``error``."""
 
     stages: tuple[StageProgress, ...] = ()
+    page_count: int = 0
+    """Number of document pages available through the gated image endpoint."""
+
     result: AdvisoryInput | None = None
     """The scrubbed (descriptor-only) result; present once ``state == "done"``."""
 
@@ -118,6 +121,7 @@ def get_job_status(job_id: str) -> JobStatus:
         job_id=job.job_id,
         state=job.state,
         stages=stages,
+        page_count=job.page_count,
         result=job.advisory_input if job.state == DONE else None,
         error=job.error,
     )

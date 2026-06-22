@@ -4,9 +4,10 @@ Mirrors the ``ocr_crosscheck.OCREngine`` pattern: downstream code depends ONLY o
 the Protocols here, the provider is swappable, optional deps import lazily and
 degrade via ``is_available()``. Three providers ship:
 
-* :class:`ClassicalProvider` — the **default**, CPU (skimage / OpenCV / numpy).
-  No torch. Its method set (ELA, double-JPEG/DQ, JPEG-grid, noise-residual,
-  copy-move) is declared here; the per-pixel math lands in 6.2/6.3.
+* :class:`ClassicalProvider` — the **default**, CPU (OpenCV / numpy / scipy /
+  Pillow). No torch. Its method set (ELA, double-JPEG/DQ, JPEG-grid,
+  noise-residual, copy-move) is real — the per-pixel math lives in
+  :mod:`.classical`; each method here just binds a name + that function.
 * :class:`PhotoHolmesProvider` — **optional, opt-in**. Lazy-imports PhotoHolmes +
   torch; ``is_available()`` is ``False`` when either is absent (exactly the
   PaddleOCR availability pattern). Its DL methods stay behind ``enable_dl_methods``
@@ -20,10 +21,9 @@ Nothing here logs the array; only its scalar / shape / method name are loggable
 (§8). Versions + device + library versions go into :class:`ForensicProvenance`
 for the reproducibility manifest (§9).
 
-This session is SCAFFOLDING: the real method math is deferred. The classical /
-PhotoHolmes methods declare their identity + ``applicable`` predicate but raise
-``NotImplementedError`` from ``analyze`` (clearly marked), mirroring how Stage 3
-shipped its stubs. The Stub provider's ``analyze`` is fully real so tests can run.
+The classical methods are fully implemented (Session 6.4). The PhotoHolmes
+provider stays opt-in and lazy; the Stub provider's ``analyze`` is deterministic
+so the stage can be exercised with no heavy deps.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from . import classical
 from .config import ImageForensicsConfig
 from .images import DecodedImage
 
@@ -123,22 +124,35 @@ class ForensicProvider(Protocol):
 # --------------------------------------------------------------------------- #
 
 class _ClassicalMethod:
-    """Base for the classical CPU methods. ``analyze`` is deferred to 6.2/6.3."""
+    """Base for the classical CPU methods (§4 method set).
+
+    Each subclass binds ``name`` + a ``_fn`` from :mod:`.classical` that returns a
+    ``[0,1]`` heatmap (or ``None`` when the method has too little data to apply).
+    ``analyze`` wraps it in a :class:`ForensicMap`. A heatmap of ``None`` is "ran,
+    found nothing" — NOT an error: it produces no fire (→ LOW), distinct from a
+    genuine exception (caught upstream in :mod:`.detect` → MEDIUM)."""
 
     name = "classical_method"
-    version = "0.1.0-stub"
+    version = "1.0.0"
     requires_jpeg = False
+    #: staticmethod(image, cfg) -> heatmap | None, bound by each subclass.
+    _fn = None
 
     def applicable(self, image: DecodedImage, cfg: ImageForensicsConfig) -> bool:
-        if image.pixels is None:
+        if image.pixels is None and not image.is_jpeg:
             return False
         if self.requires_jpeg and not image.is_jpeg:
             return False
         return True
 
     def analyze(self, image: DecodedImage, cfg: ImageForensicsConfig) -> ForensicMap:
-        raise NotImplementedError(
-            f"{self.name}: classical pixel math is implemented in Stage 6.2/6.3"
+        heatmap = type(self)._fn(image, cfg)
+        return ForensicMap(
+            method=self.name,
+            version=self.version,
+            heatmap=heatmap,
+            scalar=None,
+            params={"version": self.version},
         )
 
 
@@ -146,37 +160,37 @@ class ELAMethod(_ClassicalMethod):
     """Error-level analysis (recompress + difference). Heatmap. (§5)"""
 
     name = "ela"
-    version = "0.1.0-stub"
+    _fn = staticmethod(classical.ela_heatmap)
 
 
 class DoubleJPEGMethod(_ClassicalMethod):
     """DCT double-quantisation / double-JPEG. JPEG source only. Heatmap. (§5)"""
 
     name = "double_jpeg"
-    version = "0.1.0-stub"
     requires_jpeg = True
+    _fn = staticmethod(classical.double_jpeg_heatmap)
 
 
 class JPEGGridMethod(_ClassicalMethod):
     """8×8 JPEG-grid alignment (ZERO-style). JPEG source only. (§5)"""
 
     name = "jpeg_grid"
-    version = "0.1.0-stub"
     requires_jpeg = True
+    _fn = staticmethod(classical.jpeg_grid_heatmap)
 
 
 class NoiseResidualMethod(_ClassicalMethod):
     """Noise / residual inconsistency (Splicebuster/Noisesniffer-style). (§5)"""
 
     name = "noise_inconsistency"
-    version = "0.1.0-stub"
+    _fn = staticmethod(classical.noise_heatmap)
 
 
 class CopyMoveMethod(_ClassicalMethod):
     """Copy-move (ORB keypoints + RANSAC affine). Conservative; never HIGH alone."""
 
     name = "copy_move"
-    version = "0.1.0-stub"
+    _fn = staticmethod(classical.copy_move_heatmap)
 
 
 class ClassicalProvider:

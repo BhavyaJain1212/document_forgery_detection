@@ -49,6 +49,7 @@ def detect_findings(
         for page_index in {g.page_index for g in glyphs}
     }
     pervasive = _intra_token_mixing_is_pervasive(lines, cfg)
+    form_data_fonts = _consistent_form_data_fonts(lines, cfg)
 
     findings: list[FontFinding] = []
     for line in lines:
@@ -58,6 +59,7 @@ def detect_findings(
                 page_baselines.get(line.page_index),
                 doc_baseline,
                 pervasive,
+                form_data_fonts,
                 cfg,
             )
         )
@@ -97,11 +99,49 @@ def _hv_kind(token: Token, line: TextLine) -> HighValueKind | None:
     return classification.high_value_kind if classification is not None else None
 
 
+def _consistent_form_data_fonts(
+    lines: list[TextLine], cfg: FontConfig
+) -> set[str]:
+    """Return fonts that consistently dominate the amount/date population.
+
+    A sufficiently large, homogeneous peer group establishes a form-data font:
+    values may legitimately use a different typeface from the surrounding form
+    labels. Minority fonts are deliberately excluded so localized re-embeds
+    continue to surface.
+    """
+    if not cfg.suppress_consistent_form_data_font:
+        return set()
+
+    counts: Counter[str] = Counter()
+    for line in lines:
+        for token in line.tokens:
+            if _hv_kind(token, line) not in (
+                HighValueKind.AMOUNT,
+                HighValueKind.DATE,
+            ):
+                continue
+            token_font = dominant_font(
+                g for g in token.glyphs if not g.is_space
+            )
+            if token_font is not None:
+                counts[token_font] += 1
+
+    total = sum(counts.values())
+    if total < cfg.form_data_font_min_tokens:
+        return set()
+    return {
+        font
+        for font, count in counts.items()
+        if count / total >= cfg.form_data_font_dominant_ratio
+    }
+
+
 def _analyze_line(
     line: TextLine,
     page_baseline: str | None,
     doc_baseline: str | None,
     pervasive_mix: bool,
+    form_data_fonts: set[str],
     cfg: FontConfig,
 ) -> list[FontFinding]:
     non_space = [g for g in line.glyphs if not g.is_space]
@@ -114,7 +154,12 @@ def _analyze_line(
         if cfg.enable_baseline_deviation and doc_baseline is not None:
             findings.extend(
                 _baseline_deviation(
-                    line, non_space, page_baseline, doc_baseline, cfg
+                    line,
+                    non_space,
+                    page_baseline,
+                    doc_baseline,
+                    form_data_fonts,
+                    cfg,
                 )
             )
         return findings
@@ -138,7 +183,7 @@ def _analyze_line(
     for token in line.tokens:
         if id(token) in flagged_token_ids:
             continue
-        f = _analyze_token_in_line(line, token, cfg)
+        f = _analyze_token_in_line(line, token, form_data_fonts, cfg)
         if f is not None:
             findings.append(f)
             flagged_token_ids.add(id(token))
@@ -156,7 +201,10 @@ def _analyze_line(
 
 
 def _analyze_token_in_line(
-    line: TextLine, token: Token, cfg: FontConfig
+    line: TextLine,
+    token: Token,
+    form_data_fonts: set[str],
+    cfg: FontConfig,
 ) -> FontFinding | None:
     """Supporting check: does a uniform token differ from line-local context?"""
     classification = _classification(token, line)
@@ -198,6 +246,11 @@ def _analyze_token_in_line(
             "supporting evidence only because the token is internally consistent"
         )
     elif cfg.enable_substitution and is_substitution(tok_id, ctx_id):
+        if (
+            hv in (HighValueKind.AMOUNT, HighValueKind.DATE)
+            and token_font in form_data_fonts
+        ):
+            return None
         kind = FontFindingKind.WHOLE_TOKEN_FAMILY_DIFFERENCE
         reason = (
             f"Uniform token {token.text!r} uses {token_font!r}, a different font "
@@ -498,6 +551,7 @@ def _baseline_deviation(
     non_space: list[Glyph],
     page_baseline: str | None,
     doc_baseline: str,
+    form_data_fonts: set[str],
     cfg: FontConfig,
 ) -> list[FontFinding]:
     """Compare a uniform line with page baseline, then weak document fallback."""
@@ -528,6 +582,8 @@ def _baseline_deviation(
             continue
         hv = classification.high_value_kind
         if hv not in (HighValueKind.AMOUNT, HighValueKind.DATE):
+            continue
+        if line_font in form_data_fonts:
             continue
         finding_tier = tier
         if classification.strength is not ClassificationStrength.STRONG:

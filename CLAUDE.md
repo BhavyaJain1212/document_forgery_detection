@@ -284,10 +284,11 @@ pair: `extract.text` + `extract.normalize` → `diff.textdiff` and
 > - `src/pdf_forgery/ocr_crosscheck/CLAUDE.md` — Stage 3 OCR↔embedded cross-check
 >   (implemented; contract in `docs/STAGE3_DESIGN.md`)
 > - `src/pdf_forgery/image_forensics/CLAUDE.md` — Stage 6 raster/pixel forensics
->   (6.1–6.3 done: extraction + activation + engine + detect/localize + §7 scoring
->   + `ImageForensicsStage`, wired LIVE as substantive. The classical pixel DSP is
->   DEFERRED — methods raise `NotImplementedError` → capability gaps → the stage is
->   INCONCLUSIVE on every doc until it lands (live-safe). Contract in
+>   (6.1–6.4 done, **FULLY COMPLETE**: extraction + activation + engine + detect/
+>   localize + §7 scoring + `ImageForensicsStage`, wired LIVE as substantive. The
+>   classical CPU DSP (ELA / double-JPEG-DQ / JPEG-grid / noise-residual /
+>   copy-move) is implemented in `classical.py` and detecting real splices on real
+>   pixels; opt-in PhotoHolmes/DL stays optional. Contract in
 >   `docs/STAGE6_DESIGN.md`)
 > - `src/pdf_forgery/aggregate/CLAUDE.md` — Stage 7 aggregate + PHI-scrub + advisory + UI
 >   (post-pipeline assembly layer, not a `core.Stage`; contract in `docs/STAGE7_DESIGN.md`)
@@ -297,9 +298,10 @@ All stages are implemented and green. Live pipeline (`aggregate/jobs.py` +
 `test.py`): `revision_recovery` + `font_forensics` + `invoice_arithmetic` +
 `provenance_metadata` + `ocr_crosscheck` + `image_forensics`, fused by
 `pdf_forgery/fusion.py` into one overall verdict. `image_forensics` (Stage 6) is
-wired but INCONCLUSIVE until its classical DSP lands (deferred — see its CLAUDE.md).
-Full suite: **887 passed, 1 skipped** (the skip is the real-pristine-invoice
-precision baseline — see below).
+LIVE and detecting: its classical CPU DSP is implemented (Session 6.4) and flags
+real spliced/copy-moved/locally-recompressed scanned bills as HIGH while clean
+scans + innocent whole-page recompression stay LOW. Full suite: **895 passed, 1
+skipped** (the skip is the real-pristine-invoice precision baseline — see below).
 
 - **Dev env:** `.venv` (Python 3.12). System `pip` is 3.10 + PEP-668, so run the
   suite via `./.venv/bin/python -m pytest --ignore=tests/test_microsoft_pdf.py`

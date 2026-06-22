@@ -104,3 +104,23 @@ fallback). Canonical spec / layout / status live in the repo-root `CLAUDE.md`.
     (module-level `fitz` I/O, not a pytest test) that breaks collection; runs
     use `--ignore=tests/test_microsoft_pdf.py`. Left in place pending owner
     decision to delete.
+
+- [x] **False-positive fix — form-data fonts + vendor suffixes** (2026-06-22)
+  - Clean `test_files/W2_XL_input_clean_1000.pdf` previously produced 28
+    `PAGE_BASELINE_DEVIATION` MEDIUM findings because every amount used the
+    form's consistent `CourierNewPS-BoldMT` data-entry font over an Arial
+    template. `detect.py` now establishes a config-gated peer baseline once at
+    least 5 amount/date tokens share one font at >=80% coverage, and suppresses
+    only context-relative family-deviation findings for tokens in that dominant
+    font. Minority amount/date fonts, same-base subset fingerprints, and
+    intra-token glyph seams remain fully detectable.
+  - `fonts.py` now strips trailing foundry/format markers (`PSMT`, `PS`, `MT`)
+    before style comparison, so `ArialMT` / `Arial-BoldMT` resolve to the same
+    Arial family while real suffixes such as `Helvetica-Neue` stay distinct.
+  - New `FontConfig` controls: `suppress_consistent_form_data_font=True`,
+    `form_data_font_min_tokens=5`, `form_data_font_dominant_ratio=0.80`.
+  - New W-2 font-stage baseline: **LOW 15**, with the 28 false MEDIUM amount
+    findings removed. Two LOW `OCRAExtended` year-label differences remain and
+    do not drive suspicion. Unit coverage pins suppression, minority preservation,
+    config disablement, the small-population guard, subset-path preservation,
+    and vendor/style parsing.

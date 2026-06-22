@@ -62,6 +62,24 @@ class FontConfig:
     MEDIUM. When False, only amount/date/ID tokens are inspected."""
 
     # ------------------------------------------------------------------ #
+    # Form-data-font guard                                                #
+    # ------------------------------------------------------------------ #
+
+    suppress_consistent_form_data_font: bool = True
+    """When one font dominates a non-trivial population of amount/date tokens,
+    treat it as the form's data-entry font and suppress only context-relative
+    family-deviation findings for amount/date tokens set in that font. Minority
+    fonts and glyph/subset seams remain fully detectable."""
+
+    form_data_font_min_tokens: int = 5
+    """Minimum amount/date token population needed to establish a form-data
+    convention. Documents with only a few high-value tokens are unchanged."""
+
+    form_data_font_dominant_ratio: float = 0.80
+    """Minimum share of amount/date tokens one font must cover to qualify as the
+    document's consistent form-data font."""
+
+    # ------------------------------------------------------------------ #
     # Intra-token-mix base-rate guard                                     #
     # ------------------------------------------------------------------ #
 

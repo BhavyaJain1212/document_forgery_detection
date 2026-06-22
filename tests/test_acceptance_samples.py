@@ -3,10 +3,13 @@
 Acrobat_Demo_File.pdf is the known-positive: the amount 1871.23 was edited to
 18071.23 by inserting a '0' in a different font, and the file carries two
 revisions. Microsoft-Sample-Invoice.pdf is the clean known-negative. These
-samples live (untracked) in ``test_pdf's/``; the fixtures skip when absent.
+Most samples live (untracked) in ``test_pdf's/``; the W-2 regression sample
+lives in ``test_files/``. The tests skip when their sample is absent.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -14,8 +17,12 @@ from pdf_forgery.core import ConfidenceTier
 from pdf_forgery.font_forensics import analyze_path as font_analyze
 from pdf_forgery.font_forensics.models import FontFindingKind, HighValueKind
 from pdf_forgery.ocr_crosscheck.analyze import analyze_path as ocr_analyze
+from pdf_forgery.ocr_crosscheck.models import DivergenceType
 from pdf_forgery.ocr_crosscheck.ocr_engine import PaddleOCREngine
 from pdf_forgery.revision_recovery import analyze_path as rev_analyze
+
+
+_TEST_FILES = Path(__file__).resolve().parent.parent / "test_files"
 
 
 # --------------------------------------------------------------------------- #
@@ -109,6 +116,51 @@ def test_sejda_tampered_font_behavior_unchanged(sejda_tampered_pdf):
     assert report.tier is ConfidenceTier.LOW
     assert report.score == 15
     assert report.findings == ()
+
+
+def test_clean_w2_not_high_on_fonts():
+    """A homogeneous data-entry font on a clean W-2 is a form convention."""
+    path = _TEST_FILES / "W2_XL_input_clean_1000.pdf"
+    if not path.exists():
+        pytest.skip(f"sample not available: {path}")
+
+    report = font_analyze(path)
+
+    assert report.ok is True
+    assert report.tier in (ConfidenceTier.LOW, ConfidenceTier.INCONCLUSIVE)
+    assert not any(
+        f.kind is FontFindingKind.PAGE_BASELINE_DEVIATION
+        for f in report.findings
+    )
+
+
+def test_clean_w2_ocr_crosscheck_not_high():
+    """Form reading-order and logo OCR artifacts are not content divergence."""
+    path = _TEST_FILES / "W2_XL_input_clean_1000.pdf"
+    if not path.exists():
+        pytest.skip(f"sample not available: {path}")
+
+    engine = PaddleOCREngine()
+    if not engine.is_available():
+        pytest.skip("PaddleOCR not installed/available in this environment")
+
+    report = ocr_analyze(str(path), engine=engine)
+
+    assert report.ok is True
+    assert report.result is not None
+    assert report.result.tier in (ConfidenceTier.LOW, ConfidenceTier.INCONCLUSIVE)
+
+    non_agree = [
+        d for d in report.result.divergences
+        if d.type is not DivergenceType.AGREE
+    ]
+    texts = [
+        " ".join(w.text for w in d.embedded)
+        or (d.ocr.text if d.ocr is not None else "")
+        for d in non_agree
+    ]
+    assert not any("Statutory" in text for text in texts)
+    assert "IRSefile" not in texts
 
 
 # --------------------------------------------------------------------------- #

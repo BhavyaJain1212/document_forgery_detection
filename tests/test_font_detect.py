@@ -187,6 +187,148 @@ def test_baseline_deviation_skips_style_variant():
     assert findings == []
 
 
+def test_form_data_font_guard_suppresses_consistent_amounts():
+    # Prose dominates the page by glyph count, while six peer amounts all use
+    # one data-entry font. The class-wide convention is not a localized seam.
+    body = line_glyphs(
+        [
+            ("Federal", "ArialMT"),
+            ("wage", "ArialMT"),
+            ("statement", "ArialMT"),
+            ("employee", "ArialMT"),
+            ("information", "ArialMT"),
+            ("copy", "ArialMT"),
+        ],
+        y0=700.0,
+    )
+    amounts: list[Glyph] = []
+    for i, amount in enumerate(
+        ["28287.19", "29750.61", "1608.75", "55151.93", "6842.08", "9061.93"]
+    ):
+        amounts += line_glyphs(
+            [(amount, "BCDFEE+CourierNewPS-BoldMT")], y0=660.0 - 20 * i
+        )
+
+    findings, _ = detect_findings(body + amounts)
+
+    assert not any(
+        f.kind is FontFindingKind.PAGE_BASELINE_DEVIATION for f in findings
+    )
+
+
+def test_form_data_font_guard_keeps_minority_amount():
+    body = line_glyphs(
+        [
+            ("Federal", "ArialMT"),
+            ("wage", "ArialMT"),
+            ("statement", "ArialMT"),
+            ("employee", "ArialMT"),
+            ("information", "ArialMT"),
+            ("copy", "ArialMT"),
+        ],
+        y0=700.0,
+    )
+    rows: list[Glyph] = []
+    for i, amount in enumerate(
+        ["28287.19", "29750.61", "1608.75", "55151.93", "6842.08"]
+    ):
+        rows += line_glyphs(
+            [(amount, "BCDFEE+CourierNewPS-BoldMT")], y0=660.0 - 20 * i
+        )
+    rows += line_glyphs([("99999.99", "GHIJKL+Helvetica")], y0=560.0)
+
+    findings, _ = detect_findings(body + rows)
+
+    flagged = [f for f in findings if f.token == "99999.99"]
+    assert flagged
+    assert flagged[0].kind is FontFindingKind.PAGE_BASELINE_DEVIATION
+    assert flagged[0].high_value is HighValueKind.AMOUNT
+
+
+def test_form_data_font_guard_can_be_disabled():
+    body = line_glyphs(
+        [
+            ("Federal", "ArialMT"),
+            ("wage", "ArialMT"),
+            ("statement", "ArialMT"),
+            ("employee", "ArialMT"),
+            ("information", "ArialMT"),
+            ("copy", "ArialMT"),
+        ],
+        y0=700.0,
+    )
+    amounts: list[Glyph] = []
+    for i in range(5):
+        amounts += line_glyphs(
+            [(f"{1000 + i}.00", "CourierNewPS-BoldMT")], y0=660.0 - 20 * i
+        )
+
+    findings, _ = detect_findings(
+        body + amounts,
+        FontConfig(suppress_consistent_form_data_font=False),
+    )
+
+    assert any(
+        f.kind is FontFindingKind.PAGE_BASELINE_DEVIATION for f in findings
+    )
+
+
+def test_form_data_font_guard_suppresses_line_context_family_difference():
+    glyphs: list[Glyph] = []
+    for i, amount in enumerate(
+        ["28287.19", "29750.61", "1608.75", "55151.93", "6842.08"]
+    ):
+        glyphs += line_glyphs(
+            [
+                ("Box", "ArialMT"),
+                ("wages", "ArialMT"),
+                (amount, "CourierNewPS-BoldMT"),
+            ],
+            y0=700.0 - 20 * i,
+        )
+
+    findings, _ = detect_findings(glyphs)
+
+    assert not any(
+        f.kind is FontFindingKind.WHOLE_TOKEN_FAMILY_DIFFERENCE
+        and f.high_value in (HighValueKind.AMOUNT, HighValueKind.DATE)
+        for f in findings
+    )
+
+
+def test_form_data_font_guard_does_not_suppress_subset_fingerprint():
+    glyphs: list[Glyph] = []
+    for i, amount in enumerate(
+        ["28287.19", "29750.61", "1608.75", "55151.93", "6842.08"]
+    ):
+        glyphs += line_glyphs(
+            [("Approved", SUB_A), ("amount", SUB_A), (amount, SUB_B)],
+            y0=700.0 - 20 * i,
+        )
+
+    findings, _ = detect_findings(glyphs)
+
+    assert any(
+        f.kind is FontFindingKind.WHOLE_TOKEN_SUBSET_DIFFERENCE
+        and f.high_value is HighValueKind.AMOUNT
+        for f in findings
+    )
+
+
+def test_single_amount_baseline_deviation_unaffected_by_form_data_guard():
+    body = line_glyphs(
+        [("Care", "Helvetica"), ("Health", "Helvetica"), ("Insurance", "Helvetica")],
+        y0=700.0,
+    )
+    amount = line_glyphs([("50,000", "Times-Roman")], y0=660.0)
+
+    findings, _ = detect_findings(body + amount)
+
+    assert any(
+        f.kind is FontFindingKind.PAGE_BASELINE_DEVIATION for f in findings
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Scoring tiers
 # --------------------------------------------------------------------------- #

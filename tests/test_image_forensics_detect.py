@@ -338,18 +338,17 @@ class TestDetectEndToEnd:
         assert res.analyzed_pages == ()
         assert res.regions == ()
 
-    def test_real_classical_provider_degrades_to_capability_gaps(self):
-        # The classical methods still raise NotImplementedError (deferred DSP);
-        # detect() must record those as CAPABILITY GAPS (not runtime errors) and
-        # never crash. Gaps are "no signal" → INCONCLUSIVE in scoring, so the live
-        # stage cannot manufacture a false MEDIUM while the DSP is deferred.
+    def test_real_classical_provider_runs_real_dsp(self):
+        # Session 6.4: the classical methods are implemented — detect() runs the
+        # real DSP, records executions (no capability gaps), and never crashes. On
+        # a clean scanned bill it analyses but finds no localized region.
         if not ClassicalProvider().is_available():
             pytest.skip("classical CPU stack (numpy/cv2/PIL) unavailable")
-        pdf, _ = fixtures.build_jpeg_image_pdf()
-        ctx = AnalysisContext(pdf)
+        ctx = AnalysisContext(fixtures.build_clean_scan_pdf())
         res = detect(ctx, provider=ClassicalProvider(), config=CFG)
-        assert res.regions == ()
         assert res.provider == "classical"
-        assert res.method_errors == ()        # not runtime errors
-        assert len(res.capability_gaps) >= 1  # deferred capability
-        assert res.analyzed is False          # nothing actually executed
+        assert res.method_errors == ()        # no runtime errors
+        assert res.capability_gaps == ()      # nothing deferred any more
+        assert res.executions >= 1            # methods actually executed
+        assert res.analyzed is True
+        assert res.regions == ()              # clean bill → no localized region

@@ -55,6 +55,10 @@ _STYLE_WORDS = frozenset(
     }
 )
 
+# Foundry/format markers appended to a face name; never family-distinguishing.
+# Longest-first so a name ending in ``PSMT`` does not stop at ``MT``.
+_VENDOR_SUFFIXES = ("PSMT", "PS", "MT")
+
 # Empty / missing font names pdfminer may emit.
 _PLACEHOLDER_NAMES = frozenset({"", "unknown"})
 
@@ -98,17 +102,23 @@ def parse_font_identity(fontname: str | None) -> FontIdentity:
 
 
 def _family_root(base: str) -> str:
-    """Strip trailing style words (``-Bold``, ``,Italic``, ``-BoldOblique``)."""
+    """Strip vendor markers and trailing style words from a base face."""
     # Split on the common separators PDF font names use between family and style.
     parts = re.split(r"[-,]", base)
-    if len(parts) <= 1:
-        return base
-    root = [parts[0]]
+    root = [_strip_vendor_suffix(parts[0])]
     for part in parts[1:]:
-        if part.lower() in _STYLE_WORDS:
+        if _strip_vendor_suffix(part).lower() in _STYLE_WORDS:
             continue
         root.append(part)
     return "-".join(root)
+
+
+def _strip_vendor_suffix(part: str) -> str:
+    """Remove one trailing foundry/format marker, preserving marker-only parts."""
+    for suffix in _VENDOR_SUFFIXES:
+        if len(part) > len(suffix) and part.upper().endswith(suffix):
+            return part[: -len(suffix)]
+    return part
 
 
 def same_base_different_subset(a: FontIdentity, b: FontIdentity) -> bool:

@@ -254,7 +254,13 @@ def _run(
     compared_words = 0
     for pi in range(n_pages):
         groups, unm_emb, unm_ocr = match_words(page_embedded[pi], page_ocr[pi], cfg)
-        divs = classify_page(groups, unm_emb, unm_ocr, cfg)
+        divs = classify_page(
+            groups,
+            unm_emb,
+            unm_ocr,
+            cfg,
+            page_embedded_boxes=page_embedded[pi],
+        )
         all_divergences.extend(divs)
         compared_words += len(groups) + len(unm_emb) + len(unm_ocr)
 

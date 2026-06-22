@@ -139,6 +139,7 @@ class DetectionResult:
     global_signals: tuple[GlobalSignal, ...] = ()
     method_errors: tuple[MethodError, ...] = ()
     capability_gaps: tuple[CapabilityGap, ...] = ()
+    executions: int = 0
     analyzed_pages: tuple[int, ...] = ()
     provider: str = ""
     provenance: ForensicProvenance | None = None
@@ -155,10 +156,17 @@ class DetectionResult:
     def analyzed(self) -> bool:
         """True if at least one method actually executed (ran or errored).
 
-        Capability gaps (deferred / unavailable methods) do NOT count — a page
-        with only gaps was never really analysed, so the scorer keeps it
+        Counts methods that ran to completion (``executions`` — even with no fire:
+        "analysed, found nothing" is a real LOW signal, not no-signal) and runtime
+        errors. Capability gaps (deferred / unavailable methods) do NOT count — a
+        page with only gaps was never really analysed, so the scorer keeps it
         INCONCLUSIVE rather than inventing a verdict from nothing."""
-        return bool(self.fires or self.global_signals or self.method_errors)
+        return bool(
+            self.executions
+            or self.fires
+            or self.global_signals
+            or self.method_errors
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -200,7 +208,7 @@ def detect(
     dominant = set(act.image_dominant_pages)
     targets = [im for im in images if im.page_index in dominant]
 
-    fires, globals_, errors, gaps = _run_methods(prov, targets, cfg)
+    fires, globals_, errors, gaps, executions = _run_methods(prov, targets, cfg)
     regions = combine_fires(fires, cfg)
 
     return DetectionResult(
@@ -209,6 +217,7 @@ def detect(
         global_signals=tuple(globals_),
         method_errors=tuple(errors),
         capability_gaps=tuple(gaps),
+        executions=executions,
         analyzed_pages=tuple(sorted(dominant)),
         provider=getattr(prov, "name", ""),
         provenance=_provenance(prov, cfg),
@@ -219,12 +228,13 @@ def _run_methods(
     prov: ForensicProvider,
     images: list[DecodedImage],
     cfg: ImageForensicsConfig,
-) -> tuple[list[MethodFire], list[GlobalSignal], list[MethodError], list[CapabilityGap]]:
+) -> tuple[list[MethodFire], list[GlobalSignal], list[MethodError], list[CapabilityGap], int]:
     """Run every applicable method over every image; localize / suppress each map."""
     fires: list[MethodFire] = []
     globals_: list[GlobalSignal] = []
     errors: list[MethodError] = []
     gaps: list[CapabilityGap] = []
+    executions = 0
 
     try:
         methods = prov.methods(cfg)
@@ -253,10 +263,13 @@ def _run_methods(
                     MethodError(image.page_index, method.name, type(exc).__name__)
                 )
                 continue
+            # The method executed (even a None / empty heatmap is a real
+            # "analysed, found nothing" outcome → LOW, not no-signal).
+            executions += 1
             f, g = _fires_from_map(fmap, image, cfg)
             fires.extend(f)
             globals_.extend(g)
-    return fires, globals_, errors, gaps
+    return fires, globals_, errors, gaps, executions
 
 
 def _fires_from_map(
