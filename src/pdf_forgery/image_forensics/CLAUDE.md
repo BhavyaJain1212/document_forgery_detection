@@ -201,16 +201,86 @@ Stage 6 (raster / pixel forensics) — the destination of Stage 3's
   decoded luminance) rather than entropy-decoded, because `jpegio`/`torchjpeg` do
   not build in the restricted-network env. Adequate for localization; an
   entropy-coded-coefficient reader would sharpen DQ marginally.
-- **ELA edge sensitivity:** ELA responds to edges by design; the precision
-  fixtures are deliberately smooth. A text/rule-heavy *real* scan could yield a
-  lone-ELA full-width-rule MEDIUM — the still-owed real flatbed-scanned untouched
-  bill (drop at `test_pdf's/`) is the precision proof, not a synthetic fixture.
+- ~~**ELA edge sensitivity / real-document precision proof**~~ **CLOSED
+  2026-06-22:** the real clean, text/rule-dense multi-copy W-2 baseline exposed
+  the false HIGH and now stands as the regression proof for the document-aware
+  gates recorded below. It is not HIGH and emits no HIGH/splice finding.
 - **Thresholds** (`ela_quality`, the `*_z0` robust-z centres, `noise_flat_
   percentile`, copy-move gates) are tuned to the synthetic fixtures; expect a
   re-tune against a real scanned-bill population. The §7 scoring rule tree is
   untouched (locked).
 
+- [x] **bbox wired into the reviewer UI** (2026-06-22) — `aggregate._finding_bbox`
+  now has an `image_forensics` branch: it reads `TamperRegion.page_bbox`
+  (pdfplumber top-left points) + `page_width_pt`/`page_height_pt` off the payload
+  region and normalizes to the canonical `[0,1]` `BBox` (mirrors the
+  `revision_recovery` branch — plain divide + `_clamp01`, no y-flip), behind the
+  same positional-integrity page guard `_finding_type` already uses. So tamper
+  regions now render as boxes in the two-column document pane for **both** PDF and
+  raw image (JPEG/PNG) uploads (the server wraps an image into a full-page PDF, so
+  placement resolves to the whole page = the simplest case). No new endpoints, no
+  UI/JS change (the doc pane already renders any finding carrying a normalized
+  bbox). Tests: `tests/test_aggregate.py` (+4: normalization / no-placement→None /
+  page-guard / no-dims→None), `tests/test_image_forensics_classical.py` (+2: spliced
+  fixture + wrapped-image upload localize through `aggregate()`). Full suite: **912
+  passed, 25 skipped** (0 regressions).
+
+- [x] **document-aware classical-DSP precision calibration** (2026-06-22) — the
+  real clean multi-copy W-2 at `test_files/W2_XL_input_clean_1000.jpg` was a
+  standing false-positive baseline: dense glyph/rule edges plus the intended
+  Copy B / Copy C duplication produced 28 regions and a false **HIGH 88** splice.
+  Three conservative, config-driven gates now keep structural document patterns
+  from originating that verdict:
+  - ELA uses the same low-structure-block principle as the noise detector
+    (`ela_structure_gate=True`, `ela_flat_percentile=0.6`), with a shared
+    `_flat_block_mask`; block-scale low-pass suppresses glyph/rule edges while
+    preserving the flat foreign-noise patch in `build_spliced_amount_pdf`.
+  - copy-move rejects a RANSAC source/destination cluster whose normalized span
+    reaches `copy_move_max_cluster_span_frac=0.25`, suppressing multi-copy forms
+    while retaining the compact duplicated-stamp fixture.
+  - scoring only lets co-located regions within `splice_max_width_frac=0.90` and
+    `splice_max_area_frac=0.12` originate HIGH. Page-spanning corroborated bands
+    remain reported as MEDIUM review evidence; missing geometry remains eligible
+    so localization failure cannot silently suppress evidence.
+  - Standing result: the real W-2 is **not HIGH** and has no HIGH/splice finding
+    (residual lone DQ/noise regions may conservatively produce MEDIUM, as expected
+    for the classical engine). Synthetic splice remains HIGH; compact copy-move
+    and local double-compression remain ≥MEDIUM; clean/recompression negatives
+    remain LOW/INCONCLUSIVE. Focused tests cover every gate plus the real asset.
+
+  This closes the ELA-edge / real-document precision item above. DQ structure
+  normalization remains a possible later calibration if the desired policy is
+  to demote the residual W-2 review signal from MEDIUM to LOW; it is not required
+  for the firm no-false-HIGH acceptance bar.
+
+- [x] **DQ/noise residual precision calibration** (2026-06-23) — closed the
+  deferred lone-DQ MEDIUM item against the same real clean W-2. Before this pass,
+  the prior no-false-HIGH gates still left 10 strong lone regions (8
+  `double_jpeg`, 2 `noise_inconsistency`) and a false MEDIUM 50 review result.
+  - `double_jpeg` now applies the shared low-structure mask on its native 8x8
+    grid (`dq_structure_gate=True`, `dq_flat_percentile=0.6`). This removes the
+    decoded-IDCT rounding/clipping response on ordinary glyph/rule blocks; the
+    W-2's 8 DQ regions fall to zero.
+  - Scoring treats repeated lone regions from one method as diffuse LOW evidence
+    when their count reaches `diffuse_lone_min_count=4` or their aggregate page
+    coverage reaches `diffuse_lone_coverage_frac=0.20`. The regions remain
+    reportable; co-located evidence and method errors are never demoted.
+  - Fix-C calibration selected `noise_flat_percentile=0.5`. The noise residual
+    still uses the edge-preserving median pass, while its *structure* mask uses a
+    block-scale Gaussian low-pass so it rejects printed layout without rejecting
+    the foreign paper grain it is meant to detect. Measured result: W-2 residual
+    noise regions 2 -> 0; the synthetic foreign-noise splice remains above the
+    noise threshold and co-locates with ELA.
+  - Standing result: real W-2 **LOW 15**, zero DQ/noise regions; synthetic splice
+    **HIGH 88**; local recompression remains HIGH, compact copy-move MEDIUM, and
+    clean / whole-page recompression LOW. The recomputed-DCT DQ approximation did
+    not itself fire on the local-recompression fixture even before this gate;
+    that positive remains supported by the independent grid/noise signals.
+
+  Focused tests cover the DQ structure gate, diffuse count and coverage paths,
+  method isolation, noise-patch recall, the real W-2 precision baseline, and all
+  existing real-pixel positive/negative fixtures.
+
 ### Still optional (not required for completeness)
-PhotoHolmes / opt-in DL provider; `aggregate._finding_bbox` `image_forensics`
-branch + gated heatmap-overlay endpoint for the UI (boxes already ride the payload
-in `FindingLocation` shape); config-snapshot in the provenance manifest.
+PhotoHolmes / opt-in DL provider; a gated **heatmap**-overlay endpoint for the UI
+(the box overlay is wired — see above); config-snapshot in the provenance manifest.

@@ -31,3 +31,8 @@ htmlcov/
 tests/fixtures/
 *.out.json
 *.report.txt
+
+# Large data and model weight directories (never commit)
+datasets/
+pretrained_models/
+test_files/

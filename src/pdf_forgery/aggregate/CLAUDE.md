@@ -231,3 +231,22 @@ evidence endpoint. See `docs/STAGE7_DESIGN.md` §6.
     `TestClient` (13/13 → 200, full-size PNGs).
   - Test: `tests/test_overlay.py::test_concurrent_renders_all_succeed` (12
     threads, every render a valid PNG). Full suite: **822 passed, 1 skipped**.
+
+- [x] **bbox wired for image_forensics** (2026-06-22)
+  - Closes the last `_finding_bbox`-returns-`None` stage gap. The
+    `image_forensics` payload (`ImageForensicsReport`) carries, on each
+    `RegionFinding.region` (`TamperRegion`), a `page_bbox` in **pdfplumber
+    top-left points** plus `page_width_pt`/`page_height_pt` — so `_finding_bbox`
+    normalizes it like `revision_recovery` (plain divide + `_clamp01`, no y-flip,
+    no rotation transform), behind the same page positional-integrity guard the
+    `_finding_type` image_forensics branch already uses. A `page_bbox` of `None`
+    (nested-in-form image / unresolved placement) or non-positive dims → `None`
+    (never a wrong box). The `RegionFinding`→`Finding` map is 1:1
+    (`image_forensics/stage.py:114`, `page=region.page_index`), so the index lines
+    up. Boxes now render in the two-column doc pane for PDFs **and** raw image
+    uploads (the server wraps an image into a full-page PDF → placement = whole
+    page). No UI/JS/endpoint change.
+  - Tests: `tests/test_aggregate.py` (+4 image_forensics bbox: normalization /
+    no-placement / page-guard / no-dims), `tests/test_image_forensics_classical.py`
+    (+2 e2e: spliced fixture + wrapped-image upload localize through `aggregate()`).
+    Full suite: **912 passed, 25 skipped** (0 regressions).

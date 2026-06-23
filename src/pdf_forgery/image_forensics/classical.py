@@ -88,7 +88,27 @@ def ela_heatmap(
     block_err = _block_reduce(err, cfg.anomaly_block, np.mean)
     if block_err is None:
         return None
-    return _anomaly_map(block_err, cfg.anomaly_z0, cfg.anomaly_slope)
+    hm = _anomaly_map(block_err, cfg.anomaly_z0, cfg.anomaly_slope)
+    if not cfg.ela_structure_gate or hm is None:
+        return hm
+
+    # ELA is bright on ordinary glyph/rule edges by construction. Only retain
+    # anomalous recompression error in low-structure paper blocks, where it is
+    # meaningful evidence of a foreign compression/noise history.
+    gray = _gray(image)
+    if gray is None:
+        return hm
+    import cv2
+
+    # Classify *document structure*, not fine paper grain / foreign noise. A
+    # block-scale low-pass leaves glyph/rule/layout edges visible while treating
+    # the noisy-but-flat synthetic splice interior as flat paper.
+    kernel = max(3, cfg.anomaly_block * 2 - 1)
+    low = cv2.GaussianBlur(gray, (kernel, kernel), 0)
+    flat = _flat_block_mask(low, cfg, cfg.ela_flat_percentile)
+    if flat is None:
+        return hm
+    return hm * flat.astype(np.float64)
 
 
 def noise_heatmap(
@@ -119,13 +139,15 @@ def noise_heatmap(
     # residual without being a noise anomaly. Suppress textured blocks so the
     # method fires on a foreign noise level in flat paper, not on legitimate
     # structure (this is what keeps a lined / texty clean scan out of MEDIUM).
-    gx = cv2.Sobel(low, cv2.CV_64F, 1, 0, ksize=3)
-    gy = cv2.Sobel(low, cv2.CV_64F, 0, 1, ksize=3)
-    structure = _block_reduce(np.abs(gx) + np.abs(gy), cfg.anomaly_block, np.mean)
     hm = _anomaly_map(block_std, cfg.noise_z0, cfg.anomaly_slope, bidirectional=True)
-    if hm is None or structure is None:
+    # The median pass above deliberately preserves edges for the residual. The
+    # structure gate has a different job: blur at block scale so it sees printed
+    # layout, not the very foreign paper grain the detector is meant to retain.
+    kernel = max(3, cfg.anomaly_block * 2 - 1)
+    structure_low = cv2.GaussianBlur(gray, (kernel, kernel), 0)
+    flat = _flat_block_mask(structure_low, cfg, cfg.noise_flat_percentile)
+    if hm is None or flat is None:
         return hm
-    flat = structure <= np.quantile(structure, cfg.noise_flat_percentile)
     return hm * flat.astype(np.float64)
 
 
@@ -161,7 +183,25 @@ def double_jpeg_heatmap(
     ac = np.ones((8, 8), dtype=bool)
     ac[0, 0] = False                                     # ignore DC
     block_misfit = misfit[:, ac].mean(axis=1).reshape(nby, nbx)
-    return _anomaly_map(block_misfit, cfg.dq_z0, cfg.anomaly_slope)
+    hm = _anomaly_map(block_misfit, cfg.dq_z0, cfg.anomaly_slope)
+    if not cfg.dq_structure_gate or hm is None:
+        return hm
+
+    # Recomputed coefficients include IDCT rounding/clipping error, which is
+    # strongly content-correlated on glyph/rule edges. At DQ's native 8x8 grid,
+    # retain only low-structure paper blocks where lattice misfit can distinguish
+    # a foreign/local compression history from ordinary document content.
+    gray = _gray(image)
+    if gray is None:
+        return hm
+    import cv2
+
+    kernel = max(3, 8 * 2 - 1)
+    low = cv2.GaussianBlur(gray, (kernel, kernel), 0)
+    flat = _flat_block_mask(low, cfg, cfg.dq_flat_percentile, block=8)
+    if flat is None or flat.shape != hm.shape:
+        return hm
+    return hm * flat.astype(np.float64)
 
 
 def jpeg_grid_heatmap(
@@ -270,11 +310,24 @@ def copy_move_heatmap(
     if int(mask.sum()) < cfg.copy_move_min_matches:
         return None
 
+    src_inliers = src[mask]
+    dst_inliers = dst[mask]
+    if (
+        _cluster_span_frac(src_inliers, w, h)
+        >= cfg.copy_move_max_cluster_span_frac
+        or _cluster_span_frac(dst_inliers, w, h)
+        >= cfg.copy_move_max_cluster_span_frac
+    ):
+        # A single translation repeated over a large part of the page is a
+        # structural duplicate (multi-copy form/repeated layout), not a compact
+        # cloned stamp or patched amount.
+        return None
+
     # Build a block-resolution mask over both matched clusters.
     nby = max(1, h // cfg.anomaly_block)
     nbx = max(1, w // cfg.anomaly_block)
     heat = np.zeros((nby, nbx), dtype=np.float64)
-    for p in np.vstack([src[mask], dst[mask]]):
+    for p in np.vstack([src_inliers, dst_inliers]):
         bx = min(nbx - 1, int(p[0] / w * nbx))
         by = min(nby - 1, int(p[1] / h * nby))
         heat[by, bx] = 1.0
@@ -334,6 +387,43 @@ def _block_reduce(arr: "np.ndarray", block: int, func) -> "np.ndarray | None":
     return func(a, axis=(1, 3))
 
 
+def _flat_block_mask(
+    lowpass_luma: "np.ndarray",
+    cfg: ImageForensicsConfig,
+    percentile: float,
+    *,
+    block: int | None = None,
+) -> "np.ndarray | None":
+    """Return the lowest-structure block mask for document anomaly estimation.
+
+    ``lowpass_luma`` is already method-appropriate low-pass luminance. Keeping
+    the Sobel/block reduction here gives ELA, DQ, and noise one definition of a
+    flat document block while allowing each method to use its native grid.
+    """
+    import cv2
+    import numpy as np
+
+    gx = cv2.Sobel(lowpass_luma, cv2.CV_64F, 1, 0, ksize=3)
+    gy = cv2.Sobel(lowpass_luma, cv2.CV_64F, 0, 1, ksize=3)
+    block_size = cfg.anomaly_block if block is None else block
+    structure = _block_reduce(np.abs(gx) + np.abs(gy), block_size, np.mean)
+    if structure is None:
+        return None
+    return structure <= np.quantile(structure, percentile)
+
+
+def _cluster_span_frac(points: "np.ndarray", width: int, height: int) -> float:
+    """Normalized bounding-box area spanned by a copy-move inlier cluster."""
+    import numpy as np
+
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.size == 0 or width <= 0 or height <= 0:
+        return 0.0
+    width_frac = float(np.ptp(pts[:, 0])) / float(width)
+    height_frac = float(np.ptp(pts[:, 1])) / float(height)
+    return width_frac * height_frac
+
+
 def _anomaly_map(
     block_measure: "np.ndarray",
     z0: float,
@@ -361,7 +451,10 @@ def _anomaly_map(
     z = (m - med) / mad
     if bidirectional:
         z = np.abs(z)
-    return 1.0 / (1.0 + np.exp(-(z - z0) * slope))
+    # Clipping is numerically equivalent at float precision and avoids overflow
+    # warnings on extremely strong real-document outliers.
+    logit = np.clip((z - z0) * slope, -700.0, 700.0)
+    return 1.0 / (1.0 + np.exp(-logit))
 
 
 # --------------------------------------------------------------------------- #

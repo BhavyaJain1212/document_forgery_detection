@@ -13,7 +13,13 @@ gracefully when the classical CPU stack (numpy / cv2 / Pillow / scipy) is absent
 
 from __future__ import annotations
 
+from dataclasses import replace
+import io
+from pathlib import Path
+
+import numpy as np
 import pytest
+from PIL import Image, ImageDraw
 
 import make_image_forensics_fixtures as fixtures
 
@@ -25,6 +31,13 @@ from pdf_forgery.image_forensics import (
     ImageForensicsStage,
 )
 from pdf_forgery.image_forensics.detect import detect
+from pdf_forgery.image_forensics.classical import (
+    copy_move_heatmap,
+    double_jpeg_heatmap,
+    ela_heatmap,
+    noise_heatmap,
+)
+from pdf_forgery.image_forensics.images import DecodedImage, extract_images
 
 CFG = ImageForensicsConfig()
 _W, _H = 400, 560
@@ -48,6 +61,34 @@ def _overlaps(region_bbox, gt_frac) -> bool:
         gt_frac[0] * _W, gt_frac[1] * _H, gt_frac[2] * _W, gt_frac[3] * _H,
     )
     return min(x1, gx1) > max(x0, gx0) and min(bottom, gbot) > max(top, gtop)
+
+
+def _decoded(pixels: np.ndarray, *, content_hash: str = "12345678") -> DecodedImage:
+    h, w = pixels.shape[:2]
+    return DecodedImage(
+        page_index=0,
+        xobject_id="1 0",
+        colorspace="/DeviceRGB",
+        filters=(),
+        width=w,
+        height=h,
+        bits=8,
+        has_smask=False,
+        content_hash=content_hash,
+        pixels=pixels,
+        page_width_pt=float(w),
+        page_height_pt=float(h),
+    )
+
+
+def _decoded_jpeg(pixels: np.ndarray, *, quality: int = 90) -> DecodedImage:
+    """Round-trip pixels through JPEG and retain the verbatim source stream."""
+    buf = io.BytesIO()
+    Image.fromarray(pixels, "RGB").save(buf, format="JPEG", quality=quality)
+    jpeg = buf.getvalue()
+    decoded = np.asarray(Image.open(io.BytesIO(jpeg)).convert("RGB"))
+    image = _decoded(decoded)
+    return replace(image, filters=("/DCTDecode",), jpeg_bytes=jpeg)
 
 
 # --------------------------------------------------------------------------- #
@@ -125,3 +166,166 @@ def test_detect_is_read_only_and_never_raises_on_real_pixels():
     b = detect(ctx, provider=ClassicalProvider(), config=CFG)
     assert len(a.regions) == len(b.regions)
     assert a.executions == b.executions
+
+
+# --------------------------------------------------------------------------- #
+# Document-aware precision gates
+# --------------------------------------------------------------------------- #
+
+def test_ela_structure_gate_suppresses_text_and_rule_edges():
+    rng = np.random.default_rng(33)
+    pixels = np.clip(
+        242 + rng.normal(0, 1.3, (_H, _W, 3)), 0, 255
+    ).astype(np.uint8)
+    pil = Image.fromarray(pixels, "RGB")
+    draw = ImageDraw.Draw(pil)
+    for y in range(16, _H - 16, 24):
+        draw.line((8, y, _W - 8, y), fill=(25, 25, 25), width=1)
+        for x in range(12, _W - 20, 38):
+            draw.rectangle((x, y - 9, x + 18, y - 5), fill=(35, 35, 35))
+    for x in range(8, _W - 7, 64):
+        draw.line((x, 8, x, _H - 8), fill=(60, 60, 60), width=1)
+
+    image = _decoded(np.asarray(pil))
+    # Lower z0 exposes the ordinary edge response this unit is isolating; the
+    # production threshold remains unchanged and is covered end-to-end below.
+    cfg = replace(CFG, anomaly_z0=0.5)
+    legacy = ela_heatmap(image, replace(cfg, ela_structure_gate=False))
+    gated = ela_heatmap(image, replace(cfg, ela_structure_gate=True))
+
+    assert legacy is not None and gated is not None
+    legacy_hot = int((legacy >= cfg.ela_threshold).sum())
+    gated_hot = int((gated >= cfg.ela_threshold).sum())
+    assert legacy_hot > 0
+    assert gated_hot < legacy_hot * 0.75
+
+
+def test_ela_structure_gate_keeps_flat_foreign_patch():
+    pdf, gt = fixtures.build_spliced_amount_pdf(_W, _H)
+    image = extract_images(pdf)[0]
+    hm = ela_heatmap(image, CFG)
+    assert hm is not None
+    rows, cols = hm.shape
+    patch = hm[
+        int(gt[1] * rows) : max(int(gt[3] * rows), int(gt[1] * rows) + 1),
+        int(gt[0] * cols) : max(int(gt[2] * cols), int(gt[0] * cols) + 1),
+    ]
+    assert patch.size
+    assert float(patch.max()) >= CFG.ela_threshold
+
+
+def test_dq_structure_gate_suppresses_text_and_rule_edges():
+    rng = np.random.default_rng(55)
+    pixels = np.clip(
+        244 + rng.normal(0, 0.8, (_H, _W, 3)), 0, 255
+    ).astype(np.uint8)
+    pil = Image.fromarray(pixels, "RGB")
+    draw = ImageDraw.Draw(pil)
+    for y in range(12, _H - 12, 18):
+        draw.line((5, y, _W - 5, y), fill=(25, 25, 25), width=1)
+        for x in range(10, _W - 24, 31):
+            draw.rectangle((x, y - 7, x + 16, y - 3), fill=(40, 40, 40))
+
+    image = _decoded_jpeg(np.asarray(pil))
+    legacy = double_jpeg_heatmap(image, replace(CFG, dq_structure_gate=False))
+    gated = double_jpeg_heatmap(image, CFG)
+
+    assert legacy is not None and gated is not None
+    legacy_hot = int((legacy >= CFG.dq_threshold).sum())
+    gated_hot = int((gated >= CFG.dq_threshold).sum())
+    assert legacy_hot > 0
+    assert gated_hot < legacy_hot * 0.50
+
+
+def test_noise_retune_keeps_foreign_noise_patch_above_threshold():
+    pdf, gt = fixtures.build_spliced_amount_pdf(_W, _H)
+    image = extract_images(pdf)[0]
+    hm = noise_heatmap(image, CFG)
+    assert hm is not None
+    rows, cols = hm.shape
+    patch = hm[
+        int(gt[1] * rows) : max(int(gt[3] * rows), int(gt[1] * rows) + 1),
+        int(gt[0] * cols) : max(int(gt[2] * cols), int(gt[0] * cols) + 1),
+    ]
+    assert patch.size
+    assert float(patch.max()) >= CFG.noise_threshold
+
+
+def test_copy_move_suppresses_structural_half_page_duplicate():
+    rng = np.random.default_rng(44)
+    top_copy = rng.integers(0, 256, size=(_H // 2, _W, 3), dtype=np.uint8)
+    image = _decoded(np.vstack([top_copy, top_copy]), content_hash="abcdef12")
+
+    legacy = copy_move_heatmap(
+        image, replace(CFG, copy_move_max_cluster_span_frac=1.0)
+    )
+    gated = copy_move_heatmap(image, CFG)
+    assert legacy is not None, "fixture must exercise the structural span guard"
+    assert gated is None
+
+
+def test_clean_multicopy_w2_has_no_dq_or_noise_review_finding():
+    from pdf_forgery.aggregate.server import _wrap_image_as_pdf
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "test_files"
+        / "W2_XL_input_clean_1000.jpg"
+    )
+    if not path.exists():
+        pytest.skip("real clean W-2 precision baseline is absent")
+    pdf = _wrap_image_as_pdf(path.read_bytes())
+    res = _run(pdf)
+
+    assert res.tier in (ConfidenceTier.LOW, ConfidenceTier.INCONCLUSIVE)
+    assert not any(
+        finding.tier is ConfidenceTier.MEDIUM
+        and set(finding.region.methods) & {"double_jpeg", "noise_inconsistency"}
+        for finding in res.payload.findings
+    )
+    assert not any(
+        set(region.methods) & {"double_jpeg", "noise_inconsistency"}
+        for region in res.payload.detection.regions
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Localization through the aggregate layer (image_forensics bbox wiring)
+# --------------------------------------------------------------------------- #
+
+def _norm_overlaps_frac(bbox, gt_frac) -> bool:
+    """Normalized [0,1] ``BBox`` overlaps the fractional top-left GT patch."""
+    return (
+        min(bbox.x1, gt_frac[2]) > max(bbox.x0, gt_frac[0])
+        and min(bbox.y1, gt_frac[3]) > max(bbox.y0, gt_frac[1])
+    )
+
+
+def test_spliced_amount_localizes_through_aggregate():
+    from pdf_forgery.aggregate import aggregate
+
+    pdf, gt = fixtures.build_spliced_amount_pdf(_W, _H)
+    res = _run(pdf)
+    agg = aggregate([res])
+    boxes = [f.bbox for f in agg.findings if f.bbox is not None]
+    assert boxes, "expected at least one localized image_forensics finding"
+    assert any(_norm_overlaps_frac(b, gt) for b in boxes)
+
+
+def test_wrapped_image_upload_localizes_through_aggregate():
+    # A raw image upload is wrapped into a full-page PDF by the server; the
+    # verbatim JPEG keeps the splice signal, and the full-page placement makes
+    # localization the simplest case of the same method.
+    from pdf_forgery.aggregate import aggregate
+    from pdf_forgery.aggregate.server import _wrap_image_as_pdf
+    from pdf_forgery.image_forensics.images import extract_images
+
+    spliced_pdf, gt = fixtures.build_spliced_amount_pdf(_W, _H)
+    jpeg = next(i.jpeg_bytes for i in extract_images(spliced_pdf) if i.jpeg_bytes)
+    wrapped = _wrap_image_as_pdf(jpeg)
+
+    res = _run(wrapped)
+    agg = aggregate([res])
+    boxes = [f.bbox for f in agg.findings if f.bbox is not None]
+    assert boxes, "wrapped image upload should localize (full-page placement)"
+    assert any(_norm_overlaps_frac(b, gt) for b in boxes)

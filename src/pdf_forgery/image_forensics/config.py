@@ -95,11 +95,33 @@ class ImageForensicsConfig:
     """Robust-z centre for the bidirectional noise-residual anomaly (a spliced
     region deviates in EITHER noise direction)."""
 
-    noise_flat_percentile: float = 0.6
+    noise_flat_percentile: float = 0.5
     """Noise inconsistency is only estimated on the flattest this-fraction of
     blocks — an edge / rule / glyph inflates the residual without being a noise
     anomaly, so textured blocks are gated out (Noisesniffer principle). Keeps a
-    lined / text-bearing clean scan out of a false MEDIUM."""
+    lined / text-bearing clean scan out of a false MEDIUM. The structure mask is
+    computed after a block-scale low-pass so foreign paper grain remains eligible."""
+
+    ela_structure_gate: bool = True
+    """Restrict ELA anomalies to low-structure blocks. JPEG recompression error
+    is naturally high on glyph, rule, and box edges, so edge-dense documents can
+    otherwise manufacture ELA regions without any pixel edit. Disable only for
+    detector calibration / comparison with the legacy behaviour."""
+
+    ela_flat_percentile: float = 0.6
+    """Fraction of lowest-structure blocks eligible to carry an ELA anomaly.
+    Mirrors ``noise_flat_percentile``: high-structure glyph/rule blocks are not
+    useful evidence, while anomalous error in flat paper remains eligible."""
+
+    dq_structure_gate: bool = True
+    """Restrict recomputed-DCT lattice anomalies to low-structure 8x8 blocks.
+    Decoded JPEG rounding/clipping error is naturally largest on glyph and rule
+    edges, so those blocks are not reliable double-compression evidence. Disable
+    only for detector calibration / comparison with the legacy behaviour."""
+
+    dq_flat_percentile: float = 0.6
+    """Fraction of lowest-structure 8x8 blocks eligible to carry a DQ anomaly.
+    The DQ detector has its own 8x8 grid, independent of ``anomaly_block``."""
 
     dq_z0: float = 3.0
     """Robust-z centre for the double-JPEG quantisation-misfit anomaly."""
@@ -120,6 +142,12 @@ class ImageForensicsConfig:
     """A copy-move match pair must be separated by at least this fraction of the
     image diagonal — rejects repeated *adjacent* legitimate elements / texture."""
 
+    copy_move_max_cluster_span_frac: float = 0.25
+    """Maximum normalized bounding-box area spanned by either RANSAC inlier
+    cluster. Larger clusters represent structural/page-layout duplication (for
+    example two printed copies of one form), not a compact copy-move edit. Set
+    to ``1.0`` to recover the legacy no-span-gate behaviour."""
+
     # ---- DL methods (PhotoHolmes, opt-in + VRAM-guarded; §3) ------------ #
     enable_dl_methods: bool = False
     """DL methods (CAT-Net / PSCC-Net / FOCAL) are OFF by default — they drag in
@@ -134,8 +162,27 @@ class ImageForensicsConfig:
     region_medium_min_strength: float = 0.60
     """A lone (single-method, uncorroborated) region needs peak strength >= this
     to reach MEDIUM; a weaker isolated blob is LOW (the §7 'single weak isolated
-    blob from ONE method' rule). A co-located region is HIGH regardless — two
-    independent methods over the same region IS the corroboration."""
+    blob from ONE method' rule). Two independent methods provide corroboration,
+    but the co-located region must also pass the locality caps below to originate
+    HIGH; page-spanning bands remain reviewable at MEDIUM."""
+
+    splice_max_width_frac: float = 0.90
+    """Maximum page-width fraction a co-located region may span and still
+    originate HIGH. Near-full-width bands are structural/document-wide signals;
+    they remain visible but are capped at MEDIUM for human review."""
+
+    splice_max_area_frac: float = 0.12
+    """Maximum page-area fraction a co-located region may cover and still
+    originate HIGH. This is a secondary locality safety net, not the primary
+    ELA/copy-move discriminator."""
+
+    diffuse_lone_min_count: int = 4
+    """Lone regions from one method at or above this count are a diffuse signal,
+    not repeated independent evidence of localized edits, and score LOW."""
+
+    diffuse_lone_coverage_frac: float = 0.20
+    """Aggregate page-area coverage at which lone regions from one method are
+    treated as diffuse and score LOW. Co-located regions are never demoted."""
 
     score_low: int = 15
     score_medium: int = 50

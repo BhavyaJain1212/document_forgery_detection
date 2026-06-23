@@ -41,11 +41,19 @@ def _activation(*, dominant=(0,), n=1):
     return DocumentActivation(pages=pages)
 
 
-def _region(*, co_located=False, high_value=False, strength=0.9, page=0):
-    methods = ("double_jpeg", "noise_inconsistency") if co_located else ("double_jpeg",)
+def _region(
+    *,
+    co_located=False,
+    high_value=False,
+    strength=0.9,
+    page=0,
+    bbox=(10.0, 30.0, 30.0, 45.0),
+    method="double_jpeg",
+):
+    methods = ("double_jpeg", "noise_inconsistency") if co_located else (method,)
     return TamperRegion(
         page_index=page,
-        page_bbox=(10.0, 30.0, 30.0, 45.0),
+        page_bbox=bbox,
         methods=methods,
         strength=strength,
         co_located=co_located,
@@ -108,6 +116,44 @@ class TestLow:
         assert rep.tier is ConfidenceTier.LOW
         assert rep.findings[0].tier is ConfidenceTier.LOW
 
+    def test_four_lone_regions_from_one_method_are_diffuse_low(self):
+        regions = tuple(
+            _region(
+                bbox=(float(i * 4), 2.0, float(i * 4 + 2), 4.0),
+                strength=1.0,
+            )
+            for i in range(CFG.diffuse_lone_min_count)
+        )
+        rep = score(_det(regions=regions), _activation(), CFG)
+        assert rep.tier is ConfidenceTier.LOW
+        assert all(f.tier is ConfidenceTier.LOW for f in rep.findings)
+        assert "diffuse" in rep.reasons[0]
+
+    def test_aggregate_lone_coverage_from_one_method_is_diffuse_low(self):
+        regions = (
+            _region(bbox=(0.0, 0.0, 32.0, 12.0), strength=1.0),
+            _region(bbox=(32.0, 12.0, 64.0, 24.0), strength=1.0),
+        )
+        rep = score(_det(regions=regions), _activation(), CFG)
+        assert rep.tier is ConfidenceTier.LOW
+        assert all(f.tier is ConfidenceTier.LOW for f in rep.findings)
+
+    def test_diffuse_method_does_not_demote_other_local_method(self):
+        diffuse = tuple(
+            _region(
+                bbox=(float(i * 4), 2.0, float(i * 4 + 2), 4.0),
+                strength=1.0,
+            )
+            for i in range(CFG.diffuse_lone_min_count)
+        )
+        local = _region(method="copy_move", bbox=(40.0, 30.0, 48.0, 38.0))
+        rep = score(_det(regions=diffuse + (local,)), _activation(), CFG)
+        assert rep.tier is ConfidenceTier.MEDIUM
+        assert any(
+            f.region.methods == ("copy_move",) and f.tier is ConfidenceTier.MEDIUM
+            for f in rep.findings
+        )
+
 
 # --------------------------------------------------------------------------- #
 # MEDIUM
@@ -128,6 +174,14 @@ class TestMedium:
         assert rep.score == CFG.score_medium_method_error
         assert "errored" in rep.reasons[0]
 
+    def test_page_spanning_colocated_region_is_capped_medium(self):
+        band = _region(co_located=True, bbox=(0.0, 10.0, 64.0, 20.0))
+        rep = score(_det(regions=(band,)), _activation(), CFG)
+        assert rep.tier is ConfidenceTier.MEDIUM
+        assert rep.score == CFG.score_medium
+        assert rep.findings[0].tier is ConfidenceTier.MEDIUM
+        assert "page-spanning" in rep.reasons[0]
+
 
 # --------------------------------------------------------------------------- #
 # HIGH
@@ -141,6 +195,12 @@ class TestHigh:
         assert rep.score == CFG.score_high
         assert rep.findings[0].tier is ConfidenceTier.HIGH
         assert "two independent" in rep.findings[0].reason
+
+    def test_compact_colocated_region_remains_high(self):
+        compact = _region(co_located=True, bbox=(10.0, 30.0, 30.0, 45.0))
+        rep = score(_det(regions=(compact,)), _activation(), CFG)
+        assert rep.tier is ConfidenceTier.HIGH
+        assert rep.findings[0].tier is ConfidenceTier.HIGH
 
     def test_colocated_high_value_gets_bump(self):
         det = _det(regions=(_region(co_located=True, high_value=True),))

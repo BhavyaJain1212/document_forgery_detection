@@ -359,6 +359,36 @@ def _finding_bbox(stage_result: StageResult, finding: Finding, index: int) -> BB
             return None
         return BBox(*result)
 
+    # ------------------------------------------------------------------ #
+    # image_forensics — pdfplumber top-left points (heatmap blob → page),
+    # no origin flip needed (mirrors revision_recovery)
+    # ------------------------------------------------------------------ #
+    if stage == "image_forensics":
+        rich = _payload_findings(payload)
+        if rich is None or index >= len(rich):
+            return None
+        region = getattr(rich[index], "region", None)
+        if region is None:
+            return None
+        # Positional-integrity guard: the RegionFinding→Finding map is 1:1, but
+        # verify the page before trusting the index (never a wrong box).
+        if finding.page != getattr(region, "page_index", None):
+            return None
+        bbox = getattr(region, "page_bbox", None)
+        if bbox is None:
+            return None  # no resolved placement (e.g. nested-in-form image)
+        width = getattr(region, "page_width_pt", None)
+        height = getattr(region, "page_height_pt", None)
+        if not width or not height or width <= 0 or height <= 0:
+            return None
+        x0, top, x1, bottom = bbox
+        return BBox(
+            x0=_clamp01(x0 / width),
+            y0=_clamp01(top / height),
+            x1=_clamp01(x1 / width),
+            y1=_clamp01(bottom / height),
+        )
+
     return None
 
 

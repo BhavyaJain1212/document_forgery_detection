@@ -376,6 +376,76 @@ def test_finding_type_image_forensics_fallbacks_are_image_specific():
 
 
 # --------------------------------------------------------------------------- #
+# _finding_bbox: image_forensics region page_bbox (top-left points) -> [0,1]
+# --------------------------------------------------------------------------- #
+
+def _img_report(page_bbox, *, page=0, w=612.0, h=792.0):
+    region = TamperRegion(
+        page_index=page,
+        page_bbox=page_bbox,
+        methods=("ela", "noise_inconsistency"),
+        strength=0.9,
+        co_located=True,
+        high_value=True,
+        page_width_pt=w,
+        page_height_pt=h,
+    )
+    return ImageForensicsReport(
+        tier=ConfidenceTier.HIGH,
+        score=95,
+        findings=(
+            RegionFinding(region=region, tier=ConfidenceTier.HIGH, reason="splice"),
+        ),
+    )
+
+
+def test_image_forensics_bbox_normalizes_page_points():
+    # page_bbox is pdfplumber top-left points; expect a plain divide by page dims.
+    report = _img_report((153.0, 198.0, 306.0, 396.0))  # quarter-page box
+    agg = aggregate([report_to_stage_result(report)])
+    bbox = agg.findings[0].bbox
+    assert bbox == BBox(x0=0.25, y0=0.25, x1=0.5, y1=0.5)
+
+
+def test_image_forensics_bbox_none_without_placement():
+    # No resolved placement (e.g. nested-in-form image) -> never a wrong box.
+    report = _img_report(None)
+    agg = aggregate([report_to_stage_result(report)])
+    assert agg.findings[0].bbox is None
+
+
+def test_image_forensics_bbox_guard_rejects_page_mismatch():
+    # Region on page 1 but the core finding reports page 0 -> guard -> None.
+    region = SimpleNamespace(
+        page_index=1,
+        page_bbox=(10.0, 10.0, 20.0, 20.0),
+        page_width_pt=612.0,
+        page_height_pt=792.0,
+        co_located=False,
+        methods=("ela",),
+    )
+    payload = SimpleNamespace(findings=[SimpleNamespace(region=region)])
+    agg = aggregate(
+        [
+            _stage_result(
+                IMG,
+                ConfidenceTier.MEDIUM,
+                60,
+                findings=[_finding(IMG, ConfidenceTier.MEDIUM, page=0)],
+                payload=payload,
+            )
+        ]
+    )
+    assert agg.findings[0].bbox is None
+
+
+def test_image_forensics_bbox_none_without_page_dims():
+    report = _img_report((10.0, 10.0, 20.0, 20.0), w=0.0, h=0.0)
+    agg = aggregate([report_to_stage_result(report)])
+    assert agg.findings[0].bbox is None
+
+
+# --------------------------------------------------------------------------- #
 # PHI-scrub boundary
 # --------------------------------------------------------------------------- #
 
