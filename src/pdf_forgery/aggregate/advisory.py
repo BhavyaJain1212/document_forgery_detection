@@ -425,18 +425,11 @@ def _render_advisory(
             f"{_humanize_type(g.type)}{token_desc}, {g.count}×"
             + (f", {pages_str}" if pages_str else "")
         )
-        if g.stage == "image_forensics":
-            what_we_found = (
-                f"{meaning} Flagged {count_str} region{'s' if g.count != 1 else ''}"
-                + (f" across {pages_str}" if pages_str else "")
-                + "."
-            )
-        else:
-            what_we_found = (
-                f"{meaning} Found {count_str} instance{'s' if g.count != 1 else ''}"
-                + (f" across {pages_str}" if pages_str else "")
-                + "."
-            )
+        what_we_found = (
+            f"{meaning} Found {count_str} instance{'s' if g.count != 1 else ''}"
+            + (f" across {pages_str}" if pages_str else "")
+            + "."
+        )
         group_explanations.append(
             GroupExplanation(
                 finding_ids=g.finding_ids,
@@ -502,42 +495,6 @@ def _what_to_check(group: FindingGroup) -> str:
         return (
             f"Inspect the flagged tokens{page_ref} for font inconsistencies;"
             " compare with the surrounding text."
-        )
-    if stage == "image_forensics":
-        if type_ == "image_splice":
-            return (
-                f"Compare the suspected area{page_ref} with a known-good original;"
-                " look for a pasted patch, edited number, or boundary that does not"
-                " match the surrounding pixels."
-            )
-        if type_ == "image_copy_move":
-            return (
-                f"Look for two unusually identical areas{page_ref}, especially stamps,"
-                " amounts, or pixels that may have been cloned to cover content."
-            )
-        if type_ == "image_ela":
-            return (
-                f"Inspect the differently compressed area{page_ref} for pasted edges"
-                " or edited text, then compare it with the original document."
-            )
-        if type_ == "image_double_jpeg":
-            return (
-                f"Check the area with a different JPEG history{page_ref} for content"
-                " that may have been edited separately and pasted back into the page."
-            )
-        if type_ == "image_jpeg_grid":
-            return (
-                f"Inspect the local JPEG-grid break{page_ref} for a rectangular patch"
-                " or edge misalignment, and verify that content against the source."
-            )
-        if type_ == "image_noise":
-            return (
-                f"Compare the area with inconsistent pixel noise{page_ref} to nearby"
-                " regions and to an original scan from the issuing system."
-            )
-        return (
-            f"Inspect the suspicious image area{page_ref} for pasted, cloned, or edited"
-            " content and compare it with a known-good original."
         )
     return "Review this finding in the context of the other detector results."
 

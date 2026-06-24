@@ -140,6 +140,13 @@ async function submit(file) {
   } catch (err) {
     return renderError("The document could not be uploaded. Check your connection and try again.");
   }
+  // A standalone image is recognised but not yet analysed: the server
+  // short-circuits with 200 {status:"unsupported", message:...}.
+  if (res.status === 200) {
+    let message = "Image forgery detection — implementation coming soon";
+    try { message = (await res.json()).message || message; } catch (e) {}
+    return renderError(message);
+  }
   if (res.status !== 202) {
     let detail = "This document could not be accepted for review.";
     try { detail = (await res.json()).detail || detail; } catch (e) {}

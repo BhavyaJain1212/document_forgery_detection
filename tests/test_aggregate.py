@@ -25,12 +25,6 @@ from pdf_forgery.core.types import ConfidenceTier, Finding, StageResult
 from pdf_forgery.font_forensics.models import FontFindingKind
 from pdf_forgery.fusion import fuse
 from pdf_forgery.invoice_arithmetic.models import RelationshipKind
-from pdf_forgery.image_forensics import (
-    ImageForensicsReport,
-    RegionFinding,
-    TamperRegion,
-    report_to_stage_result,
-)
 from pdf_forgery.ocr_crosscheck.models import DivergenceType
 from pdf_forgery.provenance_metadata.models import ProvenanceFindingKind
 from pdf_forgery.revision_recovery.models import (
@@ -45,7 +39,6 @@ FONT = "font_forensics"
 ARITH = "invoice_arithmetic"
 PROV = "provenance_metadata"
 OCR = "ocr_crosscheck"
-IMG = "image_forensics"
 
 
 def _finding(stage: str, tier=ConfidenceTier.HIGH, **kw) -> Finding:
@@ -281,168 +274,6 @@ def test_finding_type_ocr_crosscheck_skips_agree_like_the_adapter():
     findings = [_finding(OCR), _finding(OCR)]
     agg = aggregate([_stage_result(OCR, ConfidenceTier.HIGH, 90, findings=findings, payload=payload)])
     assert [f.type for f in agg.findings] == ["mismatch", "embedded_only"]
-
-
-@pytest.mark.parametrize(
-    ("method", "expected"),
-    [
-        ("ela", "image_ela"),
-        ("double_jpeg", "image_double_jpeg"),
-        ("jpeg_grid", "image_jpeg_grid"),
-        ("noise_inconsistency", "image_noise"),
-        ("copy_move", "image_copy_move"),
-        ("unknown_method", "image_anomaly"),
-    ],
-)
-def test_finding_type_image_forensics_single_method(method, expected):
-    region = TamperRegion(
-        page_index=0,
-        page_bbox=None,
-        methods=(method,),
-        strength=0.8,
-        co_located=False,
-        high_value=False,
-    )
-    report = ImageForensicsReport(
-        tier=ConfidenceTier.MEDIUM,
-        score=60,
-        findings=(
-            RegionFinding(
-                region=region,
-                tier=ConfidenceTier.MEDIUM,
-                reason="localized test signal",
-            ),
-        ),
-    )
-    agg = aggregate([report_to_stage_result(report)])
-    assert agg.findings[0].type == expected
-
-
-def test_finding_type_image_forensics_colocated_is_splice():
-    region = TamperRegion(
-        page_index=0,
-        page_bbox=None,
-        methods=("ela", "noise_inconsistency"),
-        strength=0.9,
-        co_located=True,
-        high_value=True,
-    )
-    report = ImageForensicsReport(
-        tier=ConfidenceTier.HIGH,
-        score=95,
-        findings=(
-            RegionFinding(
-                region=region,
-                tier=ConfidenceTier.HIGH,
-                reason="two co-located signals",
-            ),
-        ),
-    )
-    agg = aggregate([report_to_stage_result(report)])
-    assert agg.findings[0].type == "image_splice"
-
-
-def test_finding_type_image_forensics_fallbacks_are_image_specific():
-    no_payload = aggregate(
-        [
-            _stage_result(
-                IMG,
-                ConfidenceTier.MEDIUM,
-                60,
-                findings=[_finding(IMG, ConfidenceTier.MEDIUM)],
-            )
-        ]
-    )
-    assert no_payload.findings[0].type == "image_anomaly"
-
-    region = SimpleNamespace(
-        page_index=1, co_located=False, methods=("ela",)
-    )
-    mismatched_payload = SimpleNamespace(
-        findings=[SimpleNamespace(region=region)]
-    )
-    mismatch = aggregate(
-        [
-            _stage_result(
-                IMG,
-                ConfidenceTier.MEDIUM,
-                60,
-                findings=[_finding(IMG, ConfidenceTier.MEDIUM, page=0)],
-                payload=mismatched_payload,
-            )
-        ]
-    )
-    assert mismatch.findings[0].type == "image_anomaly"
-
-
-# --------------------------------------------------------------------------- #
-# _finding_bbox: image_forensics region page_bbox (top-left points) -> [0,1]
-# --------------------------------------------------------------------------- #
-
-def _img_report(page_bbox, *, page=0, w=612.0, h=792.0):
-    region = TamperRegion(
-        page_index=page,
-        page_bbox=page_bbox,
-        methods=("ela", "noise_inconsistency"),
-        strength=0.9,
-        co_located=True,
-        high_value=True,
-        page_width_pt=w,
-        page_height_pt=h,
-    )
-    return ImageForensicsReport(
-        tier=ConfidenceTier.HIGH,
-        score=95,
-        findings=(
-            RegionFinding(region=region, tier=ConfidenceTier.HIGH, reason="splice"),
-        ),
-    )
-
-
-def test_image_forensics_bbox_normalizes_page_points():
-    # page_bbox is pdfplumber top-left points; expect a plain divide by page dims.
-    report = _img_report((153.0, 198.0, 306.0, 396.0))  # quarter-page box
-    agg = aggregate([report_to_stage_result(report)])
-    bbox = agg.findings[0].bbox
-    assert bbox == BBox(x0=0.25, y0=0.25, x1=0.5, y1=0.5)
-
-
-def test_image_forensics_bbox_none_without_placement():
-    # No resolved placement (e.g. nested-in-form image) -> never a wrong box.
-    report = _img_report(None)
-    agg = aggregate([report_to_stage_result(report)])
-    assert agg.findings[0].bbox is None
-
-
-def test_image_forensics_bbox_guard_rejects_page_mismatch():
-    # Region on page 1 but the core finding reports page 0 -> guard -> None.
-    region = SimpleNamespace(
-        page_index=1,
-        page_bbox=(10.0, 10.0, 20.0, 20.0),
-        page_width_pt=612.0,
-        page_height_pt=792.0,
-        co_located=False,
-        methods=("ela",),
-    )
-    payload = SimpleNamespace(findings=[SimpleNamespace(region=region)])
-    agg = aggregate(
-        [
-            _stage_result(
-                IMG,
-                ConfidenceTier.MEDIUM,
-                60,
-                findings=[_finding(IMG, ConfidenceTier.MEDIUM, page=0)],
-                payload=payload,
-            )
-        ]
-    )
-    assert agg.findings[0].bbox is None
-
-
-def test_image_forensics_bbox_none_without_page_dims():
-    report = _img_report((10.0, 10.0, 20.0, 20.0), w=0.0, h=0.0)
-    agg = aggregate([report_to_stage_result(report)])
-    assert agg.findings[0].bbox is None
 
 
 # --------------------------------------------------------------------------- #
@@ -713,37 +544,13 @@ def test_stub_advisory_uses_glossary_language():
     assert expl.what_to_check  # non-empty reviewer action
 
 
-def test_image_forensics_advisory_is_detector_specific():
-    finding = AdvisoryFinding(
-        finding_id="image_forensics-0",
-        stage=IMG,
-        type="image_ela",
-        tier=ConfidenceTier.MEDIUM,
-        score=None,
-        token_class=None,
-        page=0,
-        bbox=None,
-    )
-    out = generate_advisory(
-        _advisory_input(ConfidenceTier.MEDIUM, 60, [finding]),
-        engine=StubAdvisoryEngine(),
-    )
-    explanation = out.group_explanations[0]
-    assert "error-level analysis" in explanation.what_we_found.lower()
-    assert "flagged one region" in explanation.what_we_found.lower()
-    assert "differently compressed area" in explanation.what_to_check.lower()
-    assert explanation.what_to_check != (
-        "Review this finding in the context of the other detector results."
-    )
-
-
 # --------------------------------------------------------------------------- #
 # Glossary coverage — every emitted type token must have a real entry
 # --------------------------------------------------------------------------- #
 
 def test_glossary_covers_all_emitted_type_tokens():
     """Every type token _finding_type() can produce must have a non-generic glossary entry."""
-    from pdf_forgery.aggregate.aggregate import _IMAGE_METHOD_TYPE, _OBJECT_CLASS_TYPE
+    from pdf_forgery.aggregate.aggregate import _OBJECT_CLASS_TYPE
     from pdf_forgery.aggregate.glossary import _GENERIC, get_glossary_entry
 
     all_tokens: set[str] = set()
@@ -768,10 +575,6 @@ def test_glossary_covers_all_emitted_type_tokens():
     # provenance_metadata: ProvenanceFindingKind
     for pk in ProvenanceFindingKind:
         all_tokens.add(pk.value)
-
-    # image_forensics: co-located, per-method, and image-specific fallback.
-    all_tokens.update(_IMAGE_METHOD_TYPE.values())
-    all_tokens.update(("image_splice", "image_anomaly"))
 
     missing = sorted(t for t in all_tokens if get_glossary_entry(t) is _GENERIC)
     assert missing == [], f"These tokens fall to the generic glossary entry: {missing}"

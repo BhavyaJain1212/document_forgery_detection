@@ -283,25 +283,26 @@ pair: `extract.text` + `extract.normalize` → `diff.textdiff` and
 > - `src/pdf_forgery/provenance_metadata/CLAUDE.md` — provenance stage
 > - `src/pdf_forgery/ocr_crosscheck/CLAUDE.md` — Stage 3 OCR↔embedded cross-check
 >   (implemented; contract in `docs/STAGE3_DESIGN.md`)
-> - `src/pdf_forgery/image_forensics/CLAUDE.md` — Stage 6 raster/pixel forensics
->   (6.1–6.4 done, **FULLY COMPLETE**: extraction + activation + engine + detect/
->   localize + §7 scoring + `ImageForensicsStage`, wired LIVE as substantive. The
->   classical CPU DSP (ELA / double-JPEG-DQ / JPEG-grid / noise-residual /
->   copy-move) is implemented in `classical.py` and detecting real splices on real
->   pixels; opt-in PhotoHolmes/DL stays optional. Contract in
->   `docs/STAGE6_DESIGN.md`)
+> - **image_forensics (raster/pixel forensics) was REMOVED (2026-06-24).** The
+>   plan and implementation were not producing good results, so the entire
+>   `image_forensics/` subpackage (classical DSP + the opt-in TruFor DL provider)
+>   was deleted along with its tests, fixture scripts, and pipeline wiring. Only
+>   input-type detection survives: the server recognises a standalone image
+>   (JPEG/PNG) by magic bytes and short-circuits with a placeholder ("Image
+>   forgery detection — implementation coming soon") instead of analysing it; a
+>   PDF runs the pipeline unchanged. A future image stage will plug back in here.
 > - `src/pdf_forgery/aggregate/CLAUDE.md` — Stage 7 aggregate + PHI-scrub + advisory + UI
 >   (post-pipeline assembly layer, not a `core.Stage`; contract in `docs/STAGE7_DESIGN.md`)
 
 ### Where things stand
 All stages are implemented and green. Live pipeline (`aggregate/jobs.py` +
 `test.py`): `revision_recovery` + `font_forensics` + `invoice_arithmetic` +
-`provenance_metadata` + `ocr_crosscheck` + `image_forensics`, fused by
-`pdf_forgery/fusion.py` into one overall verdict. `image_forensics` (Stage 6) is
-LIVE and detecting: its classical CPU DSP is implemented (Session 6.4) and flags
-real spliced/copy-moved/locally-recompressed scanned bills as HIGH while clean
-scans + innocent whole-page recompression stay LOW. Full suite: **895 passed, 1
-skipped** (the skip is the real-pristine-invoice precision baseline — see below).
+`provenance_metadata` + `ocr_crosscheck`, fused by `pdf_forgery/fusion.py` into
+one overall verdict. The raster/pixel `image_forensics` stage was removed
+(2026-06-24, see the nested-CLAUDE.md note above) — standalone image uploads are
+detected and short-circuited to a "coming soon" placeholder, not analysed. Full
+suite: **824 passed, 25 skipped** (the skips include the real-pristine-invoice
+precision baseline — see below).
 
 - **Dev env:** `.venv` (Python 3.12). System `pip` is 3.10 + PEP-668, so run the
   suite via `./.venv/bin/python -m pytest --ignore=tests/test_microsoft_pdf.py`

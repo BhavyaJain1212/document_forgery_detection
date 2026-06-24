@@ -37,7 +37,7 @@ class AnalysisContext:
         self._layouts: list["LTPage"] | None = None
         self._raster_cache: dict[int, list[bytes]] = {}
         # Generic, stage-scoped cache. A stage stashes a derived artifact under
-        # its own namespaced key (e.g. ``"image_forensics.decoded"``) so an
+        # its own namespaced key (e.g. ``"<stage>.decoded"``) so an
         # expensive once-per-file computation is shared across calls within a
         # run, the same way the typed caches above are. Never holds input bytes.
         self._stage_cache: dict[str, Any] = {}

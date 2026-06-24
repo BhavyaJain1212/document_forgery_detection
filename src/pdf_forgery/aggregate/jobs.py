@@ -41,14 +41,12 @@ STAGE_ORDER: tuple[str, ...] = (
     "invoice_arithmetic",
     "provenance_metadata",
     "ocr_crosscheck",
-    "image_forensics",
 )
 
 
 def build_default_stages() -> list[Stage]:
     """Construct one fresh instance of each detection stage, in run order."""
     from ..font_forensics import FontForensicsStage
-    from ..image_forensics import ImageForensicsStage
     from ..invoice_arithmetic import InvoiceArithmeticStage
     from ..ocr_crosscheck.stage import OCRCrossCheckStage
     from ..provenance_metadata import ProvenanceMetadataStage
@@ -60,7 +58,6 @@ def build_default_stages() -> list[Stage]:
         InvoiceArithmeticStage(),
         ProvenanceMetadataStage(),
         OCRCrossCheckStage(),
-        ImageForensicsStage(),
     ]
 
 

@@ -36,3 +36,7 @@ tests/fixtures/
 datasets/
 pretrained_models/
 test_files/
+
+# TruFor visualization output (document pixels / heatmaps — PHI, never commit)
+trufor_output/
+trufor_benchmark/

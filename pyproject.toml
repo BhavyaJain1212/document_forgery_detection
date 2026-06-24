@@ -31,7 +31,9 @@ pdf-forgery = "pdf_forgery.cli:main"
 pdf-forgery-web = "pdf_forgery.aggregate.server:main"
 
 [tool.setuptools.package-data]
-pdf_forgery = ["aggregate/webapp/*"]
+pdf_forgery = [
+    "aggregate/webapp/*",
+]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

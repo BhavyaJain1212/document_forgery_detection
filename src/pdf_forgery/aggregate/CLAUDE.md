@@ -250,3 +250,18 @@ evidence endpoint. See `docs/STAGE7_DESIGN.md` §6.
     no-placement / page-guard / no-dims), `tests/test_image_forensics_classical.py`
     (+2 e2e: spliced fixture + wrapped-image upload localize through `aggregate()`).
     Full suite: **912 passed, 25 skipped** (0 regressions).
+
+- [x] **image_forensics removed; image uploads short-circuit** (2026-06-24)
+  - The whole `image_forensics` stage was deleted (owner: not producing good
+    results). All image_forensics handling was stripped from this layer:
+    `aggregate.py` lost `_IMAGE_METHOD_TYPE` + the `image_forensics` branches of
+    `_finding_type`/`_finding_bbox`; `advisory.py` lost the image `what_we_found`
+    branch + the `image_forensics` `what_to_check` block; `glossary.py` lost the
+    `image_*` entries; `jobs.py` dropped it from `STAGE_ORDER` + `build_default_stages`.
+  - **`server.py`**: a standalone JPEG/PNG (by magic bytes) no longer wraps into a
+    PDF + runs the pipeline. `_wrap_image_as_pdf` was deleted; the route now
+    short-circuits with `200 {"status":"unsupported","message":"Image forgery
+    detection — implementation coming soon"}`. PDF path unchanged; truly
+    unsupported types still `415`. `webapp/app.js` renders the placeholder message.
+  - Tests: `test_aggregate.py` image cases removed; `test_web.py` image-upload
+    tests assert the 200 placeholder. Full suite: **824 passed, 25 skipped**.

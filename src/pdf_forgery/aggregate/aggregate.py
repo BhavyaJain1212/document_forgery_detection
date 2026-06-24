@@ -32,17 +32,6 @@ _OBJECT_CLASS_TYPE = (
     ("META", "metadata_change"),
 )
 
-# image_forensics: stable advisory-safe type token for each classical method.
-# Method names come from the detector implementation, never from document data.
-_IMAGE_METHOD_TYPE = {
-    "ela": "image_ela",
-    "double_jpeg": "image_double_jpeg",
-    "jpeg_grid": "image_jpeg_grid",
-    "noise_inconsistency": "image_noise",
-    "copy_move": "image_copy_move",
-}
-
-
 def aggregate(
     results: Sequence[StageResult],
     config: AggregateConfig | None = None,
@@ -151,22 +140,6 @@ def _finding_type(stage_result: StageResult, finding: Finding, index: int) -> st
         if rich is not None and index < len(rich):
             return rich[index].kind.value
         return "provenance_anomaly"
-
-    if stage == "image_forensics":
-        rich = _payload_findings(payload)
-        if rich is not None and index < len(rich):
-            region = getattr(rich[index], "region", None)
-            # The stage adapter maps RegionFinding objects 1:1 into core
-            # Findings. Verify the page before trusting that positional link.
-            if region is not None and finding.page == getattr(
-                region, "page_index", None
-            ):
-                if getattr(region, "co_located", False):
-                    return "image_splice"
-                methods = getattr(region, "methods", ())
-                if methods:
-                    return _IMAGE_METHOD_TYPE.get(methods[0], "image_anomaly")
-        return "image_anomaly"
 
     return finding.high_value or "finding"
 
@@ -358,36 +331,6 @@ def _finding_bbox(stage_result: StageResult, finding: Finding, index: int) -> BB
         if result is None:
             return None
         return BBox(*result)
-
-    # ------------------------------------------------------------------ #
-    # image_forensics — pdfplumber top-left points (heatmap blob → page),
-    # no origin flip needed (mirrors revision_recovery)
-    # ------------------------------------------------------------------ #
-    if stage == "image_forensics":
-        rich = _payload_findings(payload)
-        if rich is None or index >= len(rich):
-            return None
-        region = getattr(rich[index], "region", None)
-        if region is None:
-            return None
-        # Positional-integrity guard: the RegionFinding→Finding map is 1:1, but
-        # verify the page before trusting the index (never a wrong box).
-        if finding.page != getattr(region, "page_index", None):
-            return None
-        bbox = getattr(region, "page_bbox", None)
-        if bbox is None:
-            return None  # no resolved placement (e.g. nested-in-form image)
-        width = getattr(region, "page_width_pt", None)
-        height = getattr(region, "page_height_pt", None)
-        if not width or not height or width <= 0 or height <= 0:
-            return None
-        x0, top, x1, bottom = bbox
-        return BBox(
-            x0=_clamp01(x0 / width),
-            y0=_clamp01(top / height),
-            x1=_clamp01(x1 / width),
-            y1=_clamp01(bottom / height),
-        )
 
     return None
 

@@ -361,8 +361,10 @@ def _make_png_bytes() -> bytes:
     return buf.getvalue()
 
 
-def test_jpeg_upload_accepted_and_analysed(stub_pipeline):
-    """A JPEG upload returns 202 and completes analysis (all stages → INCONCLUSIVE)."""
+def test_jpeg_upload_short_circuits_coming_soon(stub_pipeline):
+    """A JPEG is recognised but not analysed: image forgery detection is not
+    implemented yet, so the server short-circuits with a placeholder message
+    rather than creating a job."""
     from fastapi.testclient import TestClient
 
     client = TestClient(server.app)
@@ -370,15 +372,15 @@ def test_jpeg_upload_accepted_and_analysed(stub_pipeline):
         "/v1/documents",
         files={"file": ("scan.jpg", _make_jpeg_bytes(), "image/jpeg")},
     )
-    assert res.status_code == 202
-    job_id = res.json()["job_id"]
-    status = _await_done(client, job_id)
-    assert status["state"] == "done"
-    assert status["result"] is not None
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "unsupported"
+    assert "coming soon" in body["message"].lower()
+    assert "job_id" not in body
 
 
-def test_png_upload_accepted_and_analysed(stub_pipeline):
-    """A PNG upload returns 202 and completes analysis."""
+def test_png_upload_short_circuits_coming_soon(stub_pipeline):
+    """A PNG short-circuits with the same 'coming soon' placeholder."""
     from fastapi.testclient import TestClient
 
     client = TestClient(server.app)
@@ -386,11 +388,11 @@ def test_png_upload_accepted_and_analysed(stub_pipeline):
         "/v1/documents",
         files={"file": ("scan.png", _make_png_bytes(), "image/png")},
     )
-    assert res.status_code == 202
-    job_id = res.json()["job_id"]
-    status = _await_done(client, job_id)
-    assert status["state"] == "done"
-    assert status["result"] is not None
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "unsupported"
+    assert "coming soon" in body["message"].lower()
+    assert "job_id" not in body
 
 
 def test_unsupported_format_still_rejected(stub_pipeline):
@@ -415,5 +417,7 @@ def test_jpeg_magic_bytes_detected_regardless_of_extension(stub_pipeline):
         "/v1/documents",
         files={"file": ("renamed.pdf", jpeg, "application/pdf")},
     )
-    # JPEG masquerading as PDF: magic bytes are JPEG, so it gets wrapped correctly.
-    assert res.status_code == 202
+    # JPEG masquerading as PDF: magic bytes are JPEG, so it's routed as an image
+    # (short-circuited to the 'coming soon' placeholder), never run as a PDF.
+    assert res.status_code == 200
+    assert res.json()["status"] == "unsupported"

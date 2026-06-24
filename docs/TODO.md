@@ -240,6 +240,16 @@ view remain for the real Stage 7; Stage 6 (raster/pixel forensics) is next.**
 
 ## Stage 6 — Raster / pixel forensics (`pdf_forgery/image_forensics/`)
 
+> ⚠️ **REMOVED 2026-06-24.** This entire stage (classical DSP + the opt-in TruFor
+> DL provider) was deleted — the results were not reliable and the implementation
+> had become messy. The code, tests, fixture scripts, DL deps, and pipeline wiring
+> are all gone (`docs/STAGE6_DESIGN.md` was deleted too). The only surviving piece
+> is input-type detection: the server recognises a standalone JPEG/PNG and
+> short-circuits with a "coming soon" placeholder instead of analysing it. The
+> section below is kept as historical record of the abandoned design; a future
+> image stage would re-plan from scratch at the same `routed_to="image_forensics"`
+> hand-off point.
+
 Pixel-level tamper detection for scanned / photographed bills — the destination
 of Stage 3 (`ocr_crosscheck`)'s `routed_to="image_forensics"` hand-off. A
 `core.Stage` (`run(bytes, ctx) -> StageResult`, read-only, never raises);
